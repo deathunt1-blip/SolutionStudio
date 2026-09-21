@@ -1,0 +1,74 @@
+import { useEffect, useRef, useState } from 'react';
+import { Archive, ArrowRight, Check, ChevronDown, Clock3, Download, FileText, GitBranch, History, Info, Layers3, LoaderCircle, Pencil, RefreshCw, Save, ShieldCheck, Upload, X } from 'lucide-react';
+import type { Authority, DocumentRecord, KnowledgeChunk, ParsedDocument, Registries } from '../../../packages/core/src/types.js';
+import { patch, post, uploadFile } from './api.js';
+import { AuthorityBadge, Confidence, ErrorMessage, FileIcon, Loading, Status, Tags, authorities, fullDate, label, sourceLabels, splitTags, supportedFiles, useDialog, useResource, type Notify } from './ui.js';
+
+interface Detail { document: DocumentRecord; chunks: KnowledgeChunk[]; parsed?: ParsedDocument | null; versions: { id: string; versionNumber: number; status: string; createdAt: string; contentHash: string }[]; audit: Record<string, unknown>[] }
+interface EditValues { title: string; documentType: string; authority: Authority; applications: string; topics: string; products: string }
+const toValues = (doc: DocumentRecord): EditValues => ({ title: doc.title, documentType: doc.classification?.documentType.value || 'unknown', authority: doc.classification?.authority.value || 'unknown', applications: doc.classification?.applications.value.join(', ') || '', topics: doc.classification?.topics.value.join(', ') || '', products: doc.classification?.products.value.join(', ') || '' });
+
+export default function DocumentDrawer({ id, initialTab = 'overview', registries, close, onChange, notify }: { id: string; initialTab?: 'overview' | 'chunks'; registries?: Registries; close: () => void; onChange: () => void; notify: Notify }) {
+  const { data, error, loading, reload } = useResource<Detail>(`/documents/${id}`, 0, 5000);
+  const [tab, setTab] = useState<'overview' | 'chunks' | 'history'>(initialTab);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<EditValues>();
+  const [busy, setBusy] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [archiveConfirm, setArchiveConfirm] = useState(false);
+  const [showText, setShowText] = useState(false);
+  const ref = useRef<HTMLElement>(null);
+  const uploadInput = useRef<HTMLInputElement>(null);
+  useDialog(ref, close);
+  const doc = data?.document;
+  useEffect(() => { if (doc) setForm(toValues(doc)); }, [doc?.id]);
+  const update = <K extends keyof EditValues>(key: K, value: EditValues[K]) => setForm(current => current ? { ...current, [key]: value } : current);
+  const act = async (name: string, task: () => Promise<void>) => {
+    setBusy(name); setActionError('');
+    try { await task(); reload(); onChange(); }
+    catch (caught) { setActionError(caught instanceof Error ? caught.message : '操作未完成，请重试'); }
+    finally { setBusy(''); }
+  };
+  const save = async (confirm = false) => {
+    if (!form || !doc) return;
+    const original = toValues(doc);
+    const changes: Record<string, unknown> = {};
+    for (const key of ['title', 'documentType', 'authority'] as const) if (form[key] !== original[key] || (confirm && key !== 'title')) changes[key] = form[key];
+    for (const key of ['applications', 'topics', 'products'] as const) if (form[key] !== original[key]) changes[key] = splitTags(form[key]);
+    if (!Object.keys(changes).length) { setEditing(false); return; }
+    await act('save', async () => { await patch(`/documents/${id}`, changes); setEditing(false); notify(confirm ? '关键字段已确认，资料将继续建立索引。' : '资料信息已保存，确认记录已留存。'); });
+  };
+  const versionUpload = async (file: File) => act('version', async () => {
+    const result = await uploadFile(file, () => {}, false, id);
+    if (result.status === 'error') throw new Error(result.message || '上传失败');
+    notify(result.status === 'duplicate' ? '文件内容未变化，已保留当前版本。' : '新版本已接收，正在后台处理。');
+  });
+  const review = doc?.status === 'needs_review';
+  const fieldsVisible = editing || review;
+  const classifiedFields = doc?.classification;
+  return <div className="drawer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><aside className="document-drawer" ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label="资料详情"><div className="drawer-topbar"><span><FileText size={16} />资料详情</span><button className="icon-button" aria-label="关闭资料详情" onClick={close}><X size={20} /></button></div>
+    {error && <ErrorMessage message={error} retry={reload} />}
+    {loading && !doc ? <Loading /> : doc && form && <><div className="drawer-heading"><FileIcon filename={doc.filename} /><div><div className="drawer-title-meta"><Status status={doc.status} /><span>v{doc.versionNumber}</span><span>·</span><span>{sourceLabels[doc.sourceType] || doc.sourceType}</span></div><h2>{doc.title || doc.filename}</h2><p>{doc.filename}</p></div></div>
+      <div className="drawer-actions"><a className="button" href={`/api/documents/${id}/original`} download><Download size={14} />下载原文件</a><button className="button" disabled={!!busy} onClick={() => { setForm(toValues(doc)); setEditing(value => !value); setTab('overview'); }}><Pencil size={14} />{editing ? '取消编辑' : '编辑信息'}</button><div className="filter-spacer" /><span className="subtle">{doc.chunkCount} 个知识片段</span></div>
+      <div className="drawer-tabs" role="tablist" aria-label="资料详情内容">{([{ key: 'overview', text: '概览', Icon: FileText }, { key: 'chunks', text: '知识片段', Icon: Layers3 }, { key: 'history', text: '版本与记录', Icon: History }] as const).map(item => <button key={item.key} role="tab" aria-selected={tab === item.key} className={tab === item.key ? 'active' : ''} onClick={() => setTab(item.key)}><item.Icon size={15} />{item.text}{item.key === 'chunks' && <span>{data.chunks.length}</span>}</button>)}</div>
+      <div className="drawer-content">{actionError && <ErrorMessage message={actionError} />}{doc.error && <ErrorMessage message={doc.error} />}{doc.parseWarnings?.length > 0 && <div className="notice warning"><Info size={17} /><div><strong>解析提示</strong>{doc.parseWarnings.map((warning, index) => <p key={index}>{warning}</p>)}</div></div>}
+        {tab === 'overview' && <>
+          {review && <div className="notice review-notice"><ShieldCheck size={20} /><div><strong>确认两个关键字段，让资料继续入库</strong><p>{doc.reviewReasons.join('；') || '文档类型或权威级别尚不明确。'}</p><small>标签不会阻塞入库，确认结果会用于相似资料的分类参考。</small></div></div>}
+          <section className="detail-section"><div className="section-heading"><h3>资料摘要</h3><span className="section-kicker">DOCUMENT SUMMARY</span></div>{doc.summary ? <p className="document-summary">{doc.summary}</p> : <p className="subtle">{doc.status === 'failed' ? '当前文件尚未生成可用摘要。' : '解析完成后，摘要会显示在这里。'}</p>}</section>
+          <section className="detail-section"><div className="section-heading"><h3>{fieldsVisible ? '分类与标签' : '分类信息'}</h3>{!fieldsVisible && <span className="subtle">按字段记录来源与置信度</span>}</div>
+            {editing && <label className="field">资料标题<input value={form.title} onChange={event => update('title', event.target.value)} /></label>}
+            <div className="classification-grid"><div className={`classification-field ${review ? 'review-field' : ''}`}><label htmlFor="document-type">文档类型</label>{fieldsVisible ? <select id="document-type" value={form.documentType} onChange={event => update('documentType', event.target.value)}>{registries?.documentTypes.map(item => <option value={item.key} key={item.key}>{item.label}</option>)}</select> : <strong>{label(registries?.documentTypes, classifiedFields?.documentType.value)}</strong>}<Confidence field={classifiedFields?.documentType} />{classifiedFields?.documentType.reasoning && <small>{classifiedFields.documentType.reasoning}</small>}</div>
+              <div className={`classification-field ${review ? 'review-field' : ''}`}><label htmlFor="document-authority">权威级别</label>{fieldsVisible ? <select id="document-authority" value={form.authority} onChange={event => update('authority', event.target.value as Authority)}>{Object.entries(authorities).map(([key, value]) => <option value={key} key={key}>{value}</option>)}</select> : <AuthorityBadge value={classifiedFields?.authority.value} />}<Confidence field={classifiedFields?.authority} />{classifiedFields?.authority.reasoning && <small>{classifiedFields.authority.reasoning}</small>}</div></div>
+            {fieldsVisible && <p className="field-hint">正式权威可作为事实依据；历史参考用于经验借鉴；写作参考只用于表达方式。</p>}
+            <div className="detail-tags-grid">{([{ key: 'applications', name: '应用领域', registry: registries?.applications }, { key: 'topics', name: '技术主题', registry: registries?.topics }, { key: 'products', name: '产品 / 实体', registry: undefined }] as const).map(field => <div className="classification-field" key={field.key}><label htmlFor={`document-${field.key}`}>{field.name}</label>{editing ? <><input id={`document-${field.key}`} value={form[field.key]} onChange={event => update(field.key, event.target.value)} placeholder="以逗号分隔多个标签" list={`${field.key}-options`} /><datalist id={`${field.key}-options`}>{field.registry?.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</datalist></> : <div>{classifiedFields?.[field.key].value.length ? <Tags values={classifiedFields[field.key].value} registry={field.registry} max={20} /> : <span className="subtle">未识别</span>}</div>}<Confidence field={classifiedFields?.[field.key]} /></div>)}</div>
+            {fieldsVisible && <div className="save-row">{review && (form.documentType === 'unknown' || form.authority === 'unknown') && <span>选择明确的类型和权威级别后继续</span>}<button className="button primary" disabled={!!busy || !form.title.trim() || (review && (form.documentType === 'unknown' || form.authority === 'unknown'))} onClick={() => void save(review)}>{busy === 'save' ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{review ? '确认并入库' : '保存修改'}</button></div>}
+          </section>
+          <section className="detail-section"><div className="section-heading"><h3>来源与追踪</h3><GitBranch size={16} /></div><dl className="metadata-grid"><div><dt>资料来源</dt><dd>{sourceLabels[doc.sourceType] || doc.sourceType}</dd></div><div><dt>当前版本</dt><dd>Version {doc.versionNumber}</dd></div><div><dt>首次导入</dt><dd>{fullDate(doc.createdAt)}</dd></div><div><dt>最近更新</dt><dd>{fullDate(doc.updatedAt)}</dd></div><div><dt>解析状态</dt><dd>{{ success: '解析完成', partial: '部分解析', failed: '解析失败', pending: '等待解析' }[doc.parseStatus] || doc.parseStatus || '等待解析'}</dd></div><div><dt>资料范围</dt><dd>{doc.scope === 'global' ? '全局知识库' : doc.scope}</dd></div>{doc.sourcePath && <div className="metadata-wide"><dt>来源路径</dt><dd>{doc.sourcePath}</dd></div>}<div className="metadata-wide"><dt>内容指纹 · SHA-256</dt><dd><code>{doc.contentHash}</code></dd></div></dl></section>
+        </>}
+        {tab === 'chunks' && <><div className="section-heading"><div><h3>{showText ? '解析文本' : '知识片段'}</h3><p className="subtle">每个片段关联当前原文件与版本，可随时重建。</p></div>{data.parsed?.plainText && <button className="button small-button" onClick={() => setShowText(value => !value)}>{showText ? '查看片段' : '查看全文'}</button>}</div>{showText && data.parsed?.plainText ? <pre className="parsed-text">{data.parsed.plainText}</pre> : data.chunks.length ? <div className="chunk-list">{data.chunks.map(chunk => <article className="chunk-card" key={chunk.id}><div className="chunk-heading"><span className="chunk-number">{String(chunk.order + 1).padStart(2, '0')}</span><h4>{chunk.headingPath.join(' / ') || '正文片段'}</h4><span>v{doc.versionNumber}</span></div>{chunk.summary && <p className="chunk-summary">{chunk.summary}</p>}<details><summary>查看原文 <ChevronDown size={13} /></summary><pre>{chunk.text}</pre></details><div className="chunk-footer"><Tags values={chunk.topics} registry={registries?.topics} max={8} /><Tags values={chunk.products} max={8} /></div><small className="chunk-id" title={chunk.id}>片段 ID · {chunk.id}</small></article>)}</div> : <div className="chunk-empty"><Layers3 size={27} /><h3>暂时没有知识片段</h3><p>{review ? '确认文档分类后，系统将继续分段并建立索引。' : '文件完成解析与分类后，知识片段会显示在这里。'}</p></div>}</>}
+        {tab === 'history' && <><section className="detail-section"><div className="section-heading"><h3>版本历史 <span className="count-pill">{data.versions.length}</span></h3><button className="button small-button" disabled={!!busy} onClick={() => uploadInput.current?.click()}><Upload size={14} />上传新版本</button><input className="sr-only" type="file" ref={uploadInput} accept={supportedFiles} onChange={event => { const file = event.target.files?.[0]; if (file) void versionUpload(file); event.target.value = ''; }} /></div><p className="subtle">新版本处理完成后更新索引，历史原始文件持续保留。</p><div className="version-list">{data.versions.map(version => <div className="version-item" key={version.id}><span className="version-timeline"><GitBranch size={17} /></span><div><div><strong>Version {version.versionNumber}</strong>{version.id === doc.activeVersionId ? <span className="tag current-tag">当前版本</span> : <span className="tag">历史版本</span>}</div><p>{fullDate(version.createdAt)}</p><small title={version.contentHash}>内容指纹 {version.contentHash.slice(0, 16)}…</small></div><a className="icon-button" href={`/api/documents/${id}/original?versionId=${encodeURIComponent(version.id)}`} download aria-label={`下载第 ${version.versionNumber} 版原文件`}><Download size={16} /></a></div>)}</div></section><section className="detail-section"><div className="section-heading"><h3>修改记录</h3><Clock3 size={15} /></div>{data.audit?.length ? <div className="audit-list">{data.audit.map((entry, index) => <div key={String(entry.id || index)}><span className="audit-dot" /><div><strong>{String(entry.action || '人工更新资料信息')}</strong><p>{entry.createdAt || entry.modifiedAt ? fullDate(String(entry.createdAt || entry.modifiedAt)) : '已留存人工修改记录'}</p>{!!entry.field && <small>字段：{String(entry.field)}</small>}</div></div>)}</div> : <p className="subtle">暂无人工修改记录。修改分类与标签后，会在此留下记录。</p>}</section></>}
+      </div>
+      <footer className="drawer-footer">{archiveConfirm ? <div className="archive-confirm"><span>归档后资料将从默认检索中移除，原文件保留。</span><button className="button small-button" onClick={() => setArchiveConfirm(false)}>取消</button><button className="button danger small-button" disabled={!!busy} onClick={() => void act('archive', async () => { await post(`/documents/${id}/archive`); setArchiveConfirm(false); notify('资料已归档，原文件仍可下载。'); })}>确认归档</button></div> : <><button className="text-button subtle" disabled={!!busy} onClick={() => void act('rebuild', async () => { await post(`/documents/${id}/rebuild`); notify('已提交重建任务，人工确认信息会保留。'); })}><RefreshCw size={14} className={busy === 'rebuild' ? 'spin' : ''} />重新解析与索引</button><span className="filter-spacer" />{doc.status !== 'archived' && <button className="text-button muted-danger" disabled={!!busy} onClick={() => setArchiveConfirm(true)}><Archive size={14} />归档资料</button>}</>}</footer>
+    </>}
+  </aside></div>;
+}
