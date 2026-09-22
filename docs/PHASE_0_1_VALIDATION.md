@@ -10,7 +10,7 @@
 - 准确率、逐类 Precision/Recall、文档类型/Authority 混淆矩阵、置信度分桶、高风险错误、阈值模拟、A/B 对比和重复运行稳定性。
 - JSON / Markdown / CSV 报告、断点恢复、隔离数据库、请求预算及合成测试。
 
-**尚未进行正式人工标注和真实 AI 准确率验收。** 已有入库测试结果不是 Ground Truth。本阶段准备的真实清单有 60 份文件，人工答案初始为空；未标注的准确率必须显示不可计算，不能显示为 0% 或 100%。生成工具和离线自检不消耗 Kimi token。
+**已开展人工确认难例的真实 AI 评测，尚未完成具有代表性的正式验收。** 首批真实清单有 60 份文件，人工答案初始为空。后续从资料库的人工修改审计复用 38 份明确确认的类型和权威级别，另留 3 份作为评测集外参考样例；结果见[人工确认难例评测记录](PHASE_0_1_REVIEWED_SAMPLE_RESULTS.md)。这批均来自原待复核资料，不能代表全库准确率。未标注的准确率仍必须显示不可计算，不能显示为 0% 或 100%。生成工具和离线自检不消耗 Kimi token。
 
 ## 一次完整的操作
 
@@ -58,7 +58,7 @@ npm run eval:run -- --provider kimi --limit 10 --repeat 3 --budget-cny 12 --temp
 npm run eval:compare -- --baseline output/stability-t06.json --experiment output/stability-t00.json --output output/temperature-comparison.json
 ```
 
-这些命令会调用付费模型；本次开发没有执行它们。重复运行仅用于分析漂移，主准确率不会把同一文件的三次运行视为三个独立样本。
+这些命令会调用付费模型；上述三次重复与温度对比尚未执行。重复运行仅用于分析漂移，主准确率不会把同一文件的三次运行视为三个独立样本。
 
 ## 指标如何理解
 
@@ -95,7 +95,7 @@ npm run eval:report -- --input output/baseline-no-examples.json
 
 ## 验证记录
 
-2026-09-22 在 Windows / Node.js 24 上验证：
+2026-09-22 首次工具交付在 Windows / Node.js 24 上验证：
 
 - `npm test`：**11 个测试文件、68 项测试全部通过**；`npm run build` 通过。
 - 60 份真实文件的规则模式离线运行完成：38 success、21 partial、1 扫描 PDF failed；59 份可解析资料完成分类。
@@ -103,6 +103,8 @@ npm run eval:report -- --input output/baseline-no-examples.json
 - JSON、Markdown、两类混淆矩阵 CSV 已生成，独立 `eval:report` 命令验证通过。
 - 浏览器验证了原文预览、空白默认答案、文件切换及标注进度；没有保存虚假的人工答案。
 - 正式资料库前后 64 份记录、当前版本和人工确认均未改变（时间戳按同一时刻比较，排除 JSON 毫秒格式差异）。
+
+人工确认后的补充验证：评测文件上限与生产上传统一为 **80 MiB**，修复一份实际约 64 MiB 的 DOCX 被评测预检拒绝的问题。新增边界测试覆盖该文件尺寸、恰好 80 MiB 和超出 1 字节的运行器、预览、下载及保存行为；超限会在模型请求前拒绝。`npm test` **12 个测试文件、74 项全部通过**，`npm run build` 通过。真实付费运行的范围、结果及限制单独记录在[难例评测报告](PHASE_0_1_REVIEWED_SAMPLE_RESULTS.md)。
 
 CI 仅运行合成单元/集成测试，使用假模型或本地规则；不配置真实 Key、不调用 Kimi。测试覆盖指标分母、误放行、混淆矩阵、阈值、置信度、重复运行、恢复、样例泄漏、人工保存和原文件版本一致性。
 

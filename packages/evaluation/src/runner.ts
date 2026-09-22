@@ -98,7 +98,7 @@ export async function runEvaluation(options:RunEvaluationOptions,dependencies:Ev
   // before parsing each file, so an edited source never reuses a previous label.
   for(const document of selected) {
    const info=await stat(document.path);
-   if(!info.isFile()||info.size>40*1024*1024)throw new Error('评测文件不存在、不是普通文件或超过 40 MiB');
+   if(!info.isFile()||info.size>80*1024*1024)throw new Error('评测文件不存在、不是普通文件或超过 80 MiB');
    if(contentHash(await readFile(document.path))!==document.contentHash)throw new Error('评测文件内容哈希已变化，请重新生成清单并复核标注');
   }
   const [manifestBytes,labelBytes,contextBytes]=await Promise.all([readFile(options.manifest),readFile(options.labels),readFile(options.context)]);

@@ -34,7 +34,7 @@ const labelInput = z.object({
   notes: z.string().max(10000).optional(),
 }).strict();
 
-const maxSourceBytes = 40 * 1024 * 1024;
+const maxSourceBytes = 80 * 1024 * 1024;
 const textLimit = 2_000_000;
 
 function validateRegistries(input: z.infer<typeof labelInput>, registries: Registries) {
@@ -96,13 +96,13 @@ export async function createLabelServer(options: LabelServerOptions) {
     try {
       const details = await stat(document.path);
       if (!details.isFile()) throw new LabelError(404, '原文件不可读取。');
-      if (details.size > maxSourceBytes) throw new LabelError(413, '原文件超过本地标注预览的 40 MB 限制。');
+      if (details.size > maxSourceBytes) throw new LabelError(413, '原文件超过本地标注预览的 80 MiB 限制。');
       buffer = await readFile(document.path);
     } catch (error) {
       if (error instanceof LabelError) throw error;
       throw new LabelError(404, '原文件不可读取，请检查清单中的本地文件是否仍然存在。');
     }
-    if (buffer.length > maxSourceBytes) throw new LabelError(413, '原文件超过本地标注预览的 40 MB 限制。');
+    if (buffer.length > maxSourceBytes) throw new LabelError(413, '原文件超过本地标注预览的 80 MiB 限制。');
     if (contentHash(buffer) !== document.contentHash) throw new LabelError(409, '原文件内容已变化，请重新生成数据集清单；旧版本标注不能保存到新文件。');
     return buffer;
   }
