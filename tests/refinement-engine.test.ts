@@ -28,6 +28,13 @@ describe('unified refinement and current-file grounding',()=>{
   expect(result.suggestions.find(item=>item.field==='title')?.proposedValue).toBe('三维机器人K18相机建设方案');
   expect(result.usage).toEqual({inputTokens:100,outputTokens:30});expect(result.promptBytes).toBeLessThanOrEqual(MAX_PROMPT_BYTES);
  });
+ it('removes known document extensions without truncating version or model suffixes',async()=>{
+  for(const [title,expected] of [['相机标定手册 V2.1','相机标定手册 V2.1'],['相机标定手册 V2.1.DOCX','相机标定手册 V2.1'],['相机标定手册 K18.A','相机标定手册 K18.A'],['相机标定手册 K18.A.markdown','相机标定手册 K18.A']]){
+   const own=input({document:document({filename:`${expected}.docx`}),parsed:parsed(expected)});
+   const result=await refineDocument(own,model({canonical_title:proposal(title,expected)}));
+   expect(result.suggestions.find(item=>item.field==='title')?.proposedValue,title).toBe(expected);
+  }
+ });
  it.each(['概述','项目背景和建设必要性','一、技术方案','使用说明'])('rejects generic heading %s',async title=>{
   const provider=model({canonical_title:proposal(title,'建设方案')});const result=await refineDocument(input(),provider);
   expect(result.suggestions).toEqual([]);expect(isGenericTitle(title)).toBe(true);expect(result.warnings.join('')).toContain('标题');

@@ -50,7 +50,7 @@ function unsupportedTitleTerms(title:string,own:string){
 }
 const chapterPrefix=/^(?:(?:第[一二三四五六七八九十百\d]+[章节]|[一二三四五六七八九十百\d]+)[.、:：)）\s]+)/u;
 export function isGenericTitle(value:string){const title=value.trim().replace(chapterPrefix,'').replace(/[\s。:：]/g,'');return !title||/^(?:概述|项目概述|项目背景(?:和建设必要性)?|背景(?:和建设必要性)?|建设必要性|技术方案|解决方案|使用说明|用户手册|总体设计|系统概述|系统介绍|前言|目录|引言|附件|说明|概论|简介|summary|introduction|overview)$/i.test(title);}
-function cleanTitle(value:string){return value.trim().replace(/\.[a-z0-9]{1,6}$/i,'').replace(/(?:\s*[（(]\d+[)）])+(?=\s*$)/g,'').replace(/(?:[_\s-]*(?:副本|最终版|最终版本|拷贝))+$/g,'').replace(chapterPrefix,'').trim();}
+function cleanTitle(value:string){return value.trim().replace(/\.(?:docx|pdf|xlsx|xls|csv|txt|md|markdown)$/i,'').replace(/(?:\s*[（(]\d+[)）])+(?=\s*$)/g,'').replace(/(?:[_\s-]*(?:副本|最终版|最终版本|拷贝))+$/g,'').replace(chapterPrefix,'').trim();}
 
 function registryData(registries:Registries){return Object.fromEntries(Object.entries(registries).map(([kind,items])=>[kind,(items as RegistryItem[]).slice(0,80).map(item=>({key:truncateUtf8(item.key,100),label:truncateUtf8(item.label,100),aliases:item.aliases.slice(0,3).map(alias=>truncateUtf8(alias,90))}))]));}
 function compactCard(card:CorpusDocumentCard,summaryBytes=360){return {id:truncateUtf8(card.id,160),title:truncateUtf8(card.title,180),summary:truncateUtf8(card.summary,summaryBytes),document_type:card.documentType?truncateUtf8(card.documentType,100):undefined,
