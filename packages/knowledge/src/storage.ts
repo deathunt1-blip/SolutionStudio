@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, open, link, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ObjectStorage } from '../../core/src/types.js';
@@ -16,10 +16,35 @@ export class LocalObjectStorage implements ObjectStorage {
   }
   async put(key: string, data: Uint8Array) {
     const target = this.path(key);
+    const bytes = Buffer.from(data);
+    const existingMatches = async () => {
+      let existing: Buffer;
+      try { existing = await readFile(target); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+      if (!existing.equals(bytes)) throw new Error('Object key already contains different content; immutable original was preserved');
+      return true;
+    };
+    // Repeated content-addressed writes are idempotent, including across app instances.
+    if (await existingMatches()) return;
     await mkdir(dirname(target), { recursive: true });
     const temporary = `${target}.${randomUUID()}.tmp`;
-    await writeFile(temporary, data, { mode: 0o600 });
-    await rename(temporary, target);
+    let ownsTemporary = false;
+    try {
+      const handle = await open(temporary, 'wx', 0o600);
+      ownsTemporary = true;
+      try { await handle.writeFile(bytes); } finally { await handle.close(); }
+      try {
+        // Publishing a completed file with a hard link is atomic and never replaces an
+        // existing destination. rename() could overwrite it or fail with EPERM on Windows.
+        await link(temporary, target);
+      } catch (error) {
+        // Another writer may have published the same key first. Accept only exact bytes.
+        if (!await existingMatches()) throw error;
+      }
+    } finally {
+      // Each call owns only its UUID temp path; never remove the published original.
+      if (ownsTemporary) await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+    }
   }
   async get(key: string): Promise<Uint8Array> { return readFile(this.path(key)); }
 }

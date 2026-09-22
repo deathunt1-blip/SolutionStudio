@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalObjectStorage } from '../packages/knowledge/src/storage.js';
@@ -13,6 +13,17 @@ describe('source and object storage boundaries',()=>{
     await storage.put('originals/hash/file',buffer);expect(await storage.get('originals/hash/file')).toEqual(Buffer.from(buffer));
     await expect(storage.put('../outside',buffer)).rejects.toThrow('escapes');
     await expect(storage.get('/absolute')).rejects.toThrow();
+  });
+  it('atomically reuses concurrent identical originals and rejects conflicting bytes without temp leftovers',async()=>{
+    const root=await dir();const storage=new LocalObjectStorage(root);const bytes=Buffer.from('immutable original bytes');
+    await Promise.all(Array.from({length:12},()=>storage.put('originals/samehash',bytes)));
+    expect(await storage.get('originals/samehash')).toEqual(bytes);
+    await expect(storage.put('originals/samehash',Buffer.from('conflicting content'))).rejects.toThrow('different content');
+    expect(await storage.get('originals/samehash')).toEqual(bytes);
+    const racing=await Promise.allSettled([storage.put('originals/racing-key',Buffer.from('first')),storage.put('originals/racing-key',Buffer.from('second'))]);
+    expect(racing.filter(result=>result.status==='fulfilled')).toHaveLength(1);expect(racing.filter(result=>result.status==='rejected')).toHaveLength(1);
+    expect(['first','second']).toContain(Buffer.from(await storage.get('originals/racing-key')).toString());
+    expect((await readdir(join(root,'originals'))).sort()).toEqual(['racing-key','samehash']);
   });
   it('discovers only supported files and blocks folder traversal',async()=>{
     const root=await dir();await mkdir(join(root,'docs'));await writeFile(join(root,'docs','资料.md'),'# 资料');await writeFile(join(root,'ignore.exe'),'ignored');

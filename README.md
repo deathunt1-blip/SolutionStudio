@@ -53,11 +53,11 @@ npm run import:folder -- "D:\Project" --limit 60 --sample
 # 使用上次清单重现导入
 npm run import:folder -- "D:\Project" --manifest output/import-manifest.json --limit 60
 
-# Kimi CN K2.6：逐份等待完成并检查账户余额，预留 2 元后停止
-npm run import:folder -- "D:\Project" --limit 60 --sample --budget-cny 10
+# Kimi CN K2.6：逐份等待完成，按请求 token 上限控制本次预算
+npm run import:folder -- "D:\Project" --limit 60 --sample --budget-cny 10 --report output/import-report.json
 ```
 
-脚本只读源目录，跳过临时文件、符号链接和超过 40 MiB 的文件；清单与结果只写到被 Git 忽略的 `output/`。文件仍经同一上传和入库流程处理。预算保护依据账户余额变化，可能包含其他应用的同时使用与结算延迟；真实测试的 token 用量另见验收记录。
+脚本只读源目录，跳过临时文件、符号链接和超过 40 MiB 的文件；默认清单与结果只写到被 Git 忽略的 `output/`。文件仍经同一上传和入库流程处理。预算保护不查询共享账户余额：每份新资料按最多 3 次请求、每次 7,900 输入 / 3,000 输出 token、K2.6 非缓存单价保守预留约 0.3971 元，预算不足则停止；实际返回用量另行记录。重复文件不占预留额度。保护范围是本次命令启动的任务，不包含同事或其他运行的请求；单价变化后应同步调整脚本。中断后按同一清单再次导入，已有内容自动跳过；使用不同 `--report` 路径保留各次运行的用量记录。真实测试用量另见验收记录。
 
 ## 数据与配置
 
@@ -93,10 +93,13 @@ npm run check
 npm test
 npm run build
 npm audit
+# 只读检查现有资料、检索、来源和原文件哈希；不调用模型
+npx tsx scripts/audit-library.ts --output output/library-audit.json
+# 下列连接检查会产生少量模型用量
 npx tsx scripts/check-llm.ts
 ```
 
-基础测试覆盖解析、置信度、结构切块、存储边界以及上传/确认/检索/版本/去重的集成流程。真实资料验收的统计另见 `docs/VALIDATION.md`，测试资料本身不会提交到仓库。
+基础测试覆盖解析、置信度、结构切块、存储边界以及上传/确认/检索/版本/去重的集成流程，并包含 52 文件批量失败隔离、12 路并发去重、连续版本更新及模型格式兼容回归。真实资料验收的统计另见 [docs/VALIDATION.md](docs/VALIDATION.md)，测试资料本身不会提交到仓库。
 
 ## 本版范围
 
