@@ -88,6 +88,23 @@ npm start
 
 ## 验证
 
+### Phase 0.1 分类质量评测
+
+提供独立的人工标注页与评测运行器，真实评测不会写入正式知识库。先准备清单、人工确认标准答案，再比较类型 / 权威级别准确率、错误自动通过率、置信度、阈值与 Few-shot 效果。
+
+```powershell
+# 新建本地评测集；读取工作台词表和样例快照，不调用模型
+npm run eval:manifest -- --root "D:\Project" --limit 60 --library-url http://127.0.0.1:4310
+# 打开 http://127.0.0.1:4312，查看原文并人工选择标准答案
+npm run eval:label
+# 免费自检；未标注的准确率显示为不可计算
+npm run eval:run -- --provider rules --allow-unlabeled --output output/phase01-offline.json
+```
+
+真实 Kimi 评测需显式设置 `--provider kimi --budget-cny ...`，默认排除评测集中的确认样例；支持断点恢复、重复稳定性测试和 JSON / Markdown / CSV 报告。人工标签为空时不能宣称准确率达标。完整命令、指标定义与边界见 [PHASE_0_1_VALIDATION.md](docs/PHASE_0_1_VALIDATION.md)。
+
+### 自动化检查
+
 ```powershell
 npm run check
 npm test

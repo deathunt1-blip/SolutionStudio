@@ -19,7 +19,11 @@ export interface LLMConfig { baseUrl:string; apiKey:string; model:string; temper
 export interface RegistryItem { key:string; label:string; aliases:string[] }
 export interface Registries { documentTypes:RegistryItem[]; applications:RegistryItem[]; topics:RegistryItem[] }
 export interface ConfirmedExample { id:string; documentId:string; textSummary:string; confirmedFields:Partial<Classification>; createdAt:string }
-export interface ClassificationOutput { classification:Classification; summary:string; warnings:string[]; usage?: { inputTokens:number; outputTokens:number } }
+export interface ClassificationTrace {
+ fingerprint:string; prompt?:string; systemPrompt?:string; usedConfirmedExamples:string[];
+ ruleDecision:Classification; aiDecision?:unknown; evidence?:string[];
+}
+export interface ClassificationOutput { classification:Classification; summary:string; warnings:string[]; usage?: { inputTokens:number; outputTokens:number }; trace?:ClassificationTrace }
 export interface ChunkDraft { order:number; headingPath:string[]; text:string; summary:string; topics:string[]; products:string[]; metadata:Record<string,unknown> }
 export interface KnowledgeChunk extends ChunkDraft { id:string; documentId:string; versionId:string }
 export interface ObjectStorage { put(key:string,data:Uint8Array):Promise<void>; get(key:string):Promise<Uint8Array> }

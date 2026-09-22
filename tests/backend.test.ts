@@ -34,6 +34,11 @@ describe('Knowledge lifecycle with real PostgreSQL engine and local originals',(
   const update=await upload('notes.md',original+'\n新增版本：相机需要重新安装。');expect(update.documentId).toBe(first.documentId);
   detail=await done(first.documentId);expect(detail.versions).toHaveLength(2);expect(detail.versions[1].status).toBe('superseded');expect(detail.document.classification.authority.source).not.toBe('user');
   const old=await app.inject(`/api/documents/${first.documentId}/original?versionId=${detail.versions[1].id}`);expect(old.body).toBe(original);
+  const snapshot=(await app.inject('/api/evaluation/context')).json();
+  expect(snapshot.schemaVersion).toBe(1);expect(snapshot.examples).toHaveLength(1);
+  expect(snapshot.examples[0].documentId).toBe(first.documentId);
+  expect(snapshot.examples[0].contentHashes).toHaveLength(2);
+  expect(snapshot).not.toHaveProperty('llm');
   await app.inject({method:'POST',url:`/api/documents/${first.documentId}/archive`});
   expect((await app.inject('/api/search?q=K18')).json().total).toBe(0);
   expect((await app.inject(`/api/documents/${first.documentId}/original`)).statusCode).toBe(200);
@@ -42,6 +47,7 @@ describe('Knowledge lifecycle with real PostgreSQL engine and local originals',(
   const denied=await app.inject({method:'PATCH',url:'/api/settings',headers:{origin:'https://evil.example'},payload:{reviewThreshold:0.1}});expect(denied.statusCode).toBe(403);
   const invalid=await app.inject({method:'PATCH',url:'/api/settings',payload:{reviewThreshold:0.95}});expect(invalid.statusCode).toBe(400);
   const key='test-only-private-credential';const changed=await app.inject({method:'PATCH',url:'/api/settings',payload:{llm:{apiKey:key}}});expect(changed.statusCode).toBe(200);expect(changed.body).not.toContain(key);
+  const snapshot=await app.inject('/api/evaluation/context');expect(snapshot.statusCode).toBe(200);expect(snapshot.body).not.toContain(key);expect(snapshot.json().examples).toHaveLength(0);
   const svc=(app as any).knowledge;const stored=await svc.db.query('SELECT value FROM settings');expect(JSON.stringify(stored)).not.toContain(key);
   const item=await upload('技术方案.md','# 技术方案\n机器人相机部署项目，型号 K18。',{sourceId:'local-import',sourcePath:'project/技术方案.md'});await done(item.documentId);
   expect((await app.inject('/api/documents?source=local-import')).json().total).toBe(1);

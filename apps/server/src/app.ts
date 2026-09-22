@@ -111,6 +111,12 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  app.post('/api/documents/:id/archive',async request=>{await service.archive(params(request).id);return{ok:true};});
  app.post('/api/documents/:id/rebuild',async request=>{await service.rebuild(params(request).id);return{ok:true};});
  app.get('/api/registries',async()=>getRegistries(db));
+ // Private local snapshot for isolated evaluation; never exports credentials.
+ app.get('/api/evaluation/context',async()=>{
+  const settings=await service.settings.get();
+  const rows=await db.query(`SELECT e.*,ARRAY(SELECT DISTINCT v.content_hash FROM document_versions v WHERE v.document_id=e.document_id) AS content_hashes FROM confirmed_examples e JOIN documents d ON d.id=e.document_id WHERE ${scoped} AND e.organization_id='default' AND e.workspace_id='default' AND e.scope='global' AND d.status<>'archived' ORDER BY e.created_at,e.id`);
+  return {schemaVersion:1,createdAt:new Date().toISOString(),registries:await getRegistries(db),thresholds:{review:settings.reviewThreshold,autoAccept:settings.autoAcceptThreshold},examples:rows.map(row=>({id:row.id,documentId:row.document_id,textSummary:row.text_summary,confirmedFields:row.confirmed_fields,createdAt:new Date(row.created_at).toISOString(),contentHashes:row.content_hashes}))};
+ });
  app.post('/api/registries/:kind',async request=>{
   const table=registryTables[params(request).kind as keyof Registries];if(!table)throw new HttpError(404,'分类目录不存在');
   const input=body(request);const key=input.key;const label=input.label;const aliases=input.aliases??[];

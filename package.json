@@ -12,7 +12,12 @@
     "start": "tsx apps/server/src/index.ts",
     "test": "vitest run",
     "check": "tsc --noEmit",
-    "import:folder": "tsx scripts/import-folder.ts"
+    "import:folder": "tsx scripts/import-folder.ts",
+    "eval:manifest": "tsx scripts/build-eval-manifest.ts",
+    "eval:label": "tsx scripts/label-eval.ts",
+    "eval:run": "tsx scripts/run-evaluation.ts",
+    "eval:compare": "tsx scripts/compare-evaluations.ts",
+    "eval:report": "tsx scripts/report-evaluation.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.14",

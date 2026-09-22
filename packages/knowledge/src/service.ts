@@ -3,7 +3,8 @@ import type { Classification, ParsedDocument, SourceFile, ChunkDraft, ObjectStor
 import type { Connection, Database } from './database.js';
 import { SettingsStore } from './settings.js';
 import { getDocument, getClassification, getRegistries, saveClassification, scoped } from './repository.js';
-import { indexText, queryText } from './search.js';
+import { indexText } from './search.js';
+import { retrieveConfirmedExamples } from './examples.js';
 import { parseDocument } from '../../parsers/src/index.js';
 import { classifyDocument, reviewReasons } from '../../classification/src/index.js';
 import { chunkDocument } from '../../ingestion/src/chunking.js';
@@ -99,7 +100,7 @@ export class KnowledgeService {
   if(parsed.parseStatus==='failed' || !parsed.plainText.trim()) throw new Error(parsed.parseWarnings.join('；') || '无法提取文本；原文件已保留，请检查格式或使用 OCR 后重试');
   await this.state(job.document_id,job.version_id,'parsed');
   await this.state(job.document_id,job.version_id,'classifying');
-  const examples=await this.examples(parsed.plainText.slice(0,12000),job.document_id);
+  const examples=await retrieveConfirmedExamples(this.db,parsed.plainText.slice(0,12000),job.document_id);
   const config=await this.settings.config();
   const output=await classifyDocument(file.meta,parsed,await getRegistries(this.db),examples,config ? this.providerFactory(config) : undefined);
   const usage=(output as typeof output & {usage?:{inputTokens:number;outputTokens:number}}).usage;
@@ -121,12 +122,6 @@ export class KnowledgeService {
    await this.writeChunks(tx,job.document_id,job.version_id,chunks,classification,parsed.title||version.filename);
    if(docs[0].status!=='archived') await tx.query('UPDATE documents SET status=$1,updated_at=now() WHERE id=$2',[reasons.length?'needs_review':'active',job.document_id]);
   });
- }
- private async examples(text:string,excludeId:string) {
-  const query=queryText(text.slice(0,3000),'or');
-  if(!query) return [];
-  const rows=await this.db.query(`SELECT e.* FROM confirmed_examples e JOIN documents d ON d.id=e.document_id WHERE ${scoped} AND e.organization_id='default' AND e.workspace_id='default' AND e.scope='global' AND d.status<>'archived' AND e.document_id<>$1 AND e.search_vector @@ to_tsquery('simple',$2) ORDER BY ts_rank_cd(e.search_vector,to_tsquery('simple',$2)) DESC,e.created_at DESC LIMIT 5`,[excludeId,query]);
-  return rows.map(r=>({id:r.id,documentId:r.document_id,textSummary:r.text_summary,confirmedFields:r.confirmed_fields,createdAt:String(r.created_at)}));
  }
  private async writeChunks(tx:Connection,documentId:string,versionId:string,chunks:ChunkDraft[],classification:Classification,title:string) {
   await tx.query('DELETE FROM knowledge_chunks WHERE version_id=$1',[versionId]);

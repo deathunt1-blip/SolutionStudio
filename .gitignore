@@ -5,6 +5,10 @@ dist/
 !.env.example
 data/
 output/
+evaluation-data/
+evaluation/manifest.json
+evaluation/labels.json
+evaluation/reports/
 test-results/
 *.log
 *.tsbuildinfo
