@@ -4,15 +4,16 @@ import { registryTables } from './database.js';
 import { queryText } from './search.js';
 
 export const scoped = "d.organization_id='default' AND d.workspace_id='default' AND d.scope='global'";
-export const documentSelect = `SELECT d.id,d.title,d.status,d.scope,d.created_at,d.updated_at,d.active_version_id,
- v.filename,v.version_number,v.content_hash,v.summary,v.parse_status,v.parse_warnings,v.review_reasons,v.error,
+export const documentSelect = `SELECT d.id,d.title,d.canonical_title,d.title_source,d.title_confidence,d.title_reasoning,d.title_user,d.status,d.scope,d.created_at,d.updated_at,d.active_version_id,
+ v.filename,v.version_number,v.content_hash,coalesce(v.ai_summary,v.extractive_summary,v.summary) AS summary,v.extractive_summary,v.ai_summary,v.summary_source,v.parsed_title,v.parse_status,v.parse_warnings,v.review_reasons,v.error,
  s.id AS source_id,s.type AS source_type,sd.source_path,
  (SELECT count(*)::int FROM knowledge_chunks c WHERE c.version_id=v.id) AS chunk_count,
+ (SELECT coalesce(jsonb_agg(jsonb_build_object('id',g.id,'name',g.name) ORDER BY g.name),'[]'::jsonb) FROM knowledge_group_documents gd JOIN knowledge_groups g ON g.id=gd.group_id WHERE gd.document_id=d.id) AS knowledge_groups,
  (SELECT jsonb_object_agg(cr.field,jsonb_build_object('value',cr.value,'confidence',cr.confidence,'source',cr.source,'reasoning',cr.reasoning)) FROM classification_results cr WHERE cr.version_id=v.id) AS classification
  FROM documents d JOIN document_versions v ON v.id=d.active_version_id JOIN source_documents sd ON sd.id=d.source_document_id JOIN knowledge_sources s ON s.id=sd.source_id`;
 const date = (v: any) => v instanceof Date ? v.toISOString() : String(v);
 export function documentRecord(r: any): DocumentRecord {
- return {id:r.id,title:r.title,filename:r.filename,status:r.status,scope:r.scope,sourceId:r.source_id,sourceType:r.source_type,sourcePath:r.source_path ?? undefined,activeVersionId:r.active_version_id,versionNumber:r.version_number,contentHash:r.content_hash,summary:r.summary,classification:r.classification,reviewReasons:r.review_reasons || [],parseStatus:r.parse_status,parseWarnings:r.parse_warnings || [],createdAt:date(r.created_at),updatedAt:date(r.updated_at),chunkCount:Number(r.chunk_count),error:r.error || undefined};
+ return {id:r.id,title:r.canonical_title||r.title,canonicalTitle:r.canonical_title||r.title,filename:r.filename,originalFilename:r.filename,parsedTitle:r.parsed_title||undefined,titleSource:r.title_source,titleConfidence:r.title_confidence,titleReasoning:r.title_reasoning,titleLocked:r.title_user||r.title_source==='user',extractiveSummary:r.extractive_summary,aiSummary:r.ai_summary,summarySource:r.summary_source,knowledgeGroups:r.knowledge_groups||[],status:r.status,scope:r.scope,sourceId:r.source_id,sourceType:r.source_type,sourcePath:r.source_path ?? undefined,activeVersionId:r.active_version_id,versionNumber:r.version_number,contentHash:r.content_hash,summary:r.summary,classification:r.classification,reviewReasons:r.review_reasons || [],parseStatus:r.parse_status,parseWarnings:r.parse_warnings || [],createdAt:date(r.created_at),updatedAt:date(r.updated_at),chunkCount:Number(r.chunk_count),error:r.error || undefined};
 }
 export function chunkRecord(r: any): KnowledgeChunk { return {id:r.id,documentId:r.document_id,versionId:r.version_id,order:r.chunk_order,headingPath:r.heading_path,text:r.text,summary:r.summary,topics:r.topics,products:r.products,metadata:r.metadata}; }
 export async function getDocument(db: Connection,id:string) { const rows = await db.query(`${documentSelect} WHERE ${scoped} AND d.id=$1`,[id]); return rows[0] ? documentRecord(rows[0]) : undefined; }
@@ -38,6 +39,7 @@ export function filters(input: Record<string,string>, startIndex=0, search=false
  const arg = (v:unknown) => { values.push(v); return `$${values.length+startIndex}`; };
  if (input.status) clauses.push(`d.status=${arg(input.status)}`); else if(search) clauses.push("d.status='active'");
  if(input.source) { const p=arg(input.source); clauses.push(`(s.id=${p} OR s.type=${p})`); }
+ if(input.group)clauses.push(`EXISTS(SELECT 1 FROM knowledge_group_documents gd WHERE gd.document_id=d.id AND gd.group_id=${arg(input.group)})`);
  for (const [key,field] of [['documentType','documentType'],['authority','authority']]) if(input[key]) clauses.push(`EXISTS(SELECT 1 FROM classification_results f WHERE f.version_id=v.id AND f.field='${field}' AND f.value=to_jsonb(${arg(input[key])}::text))`);
  for (const [key,table,col] of [['application','document_applications','application'],['topic','document_topics','topic'],['product','document_products','product']]) if(input[key]) clauses.push(`EXISTS(SELECT 1 FROM ${table} f WHERE f.version_id=v.id AND f.${col}=${arg(input[key])})`);
  if(input.q && !search) { const raw=arg(`%${input.q}%`); const fts=queryText(input.q); const ftsParam=fts ? arg(fts) : undefined; clauses.push(`(d.title ILIKE ${raw} OR v.filename ILIKE ${raw}${ftsParam ? ` OR EXISTS(SELECT 1 FROM knowledge_chunks f WHERE f.version_id=v.id AND f.search_vector @@ to_tsquery('simple',${ftsParam}))`:''})`); }

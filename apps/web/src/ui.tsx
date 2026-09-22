@@ -3,7 +3,7 @@ import { AlertCircle, Check, CheckCircle2, Circle, FileSpreadsheet, FileText, Fo
 import type { Authority, ClassifiedValue, DocumentRecord, DocumentStatus, Registries } from '../../../packages/core/src/types.js';
 import { api } from './api.js';
 
-export type Page = 'inbox' | 'library' | 'review' | 'settings';
+export type Page = 'inbox' | 'library' | 'review' | 'settings' | 'refinement';
 export interface Stats { total: number; active: number; needsReview: number; failed: number; processing: number; chunks: number; confirmedExamples: number }
 export type Notify = (message: string, kind?: 'success' | 'error') => void;
 export const authorities: Record<Authority, string> = { authoritative: '正式权威', reference: '历史参考', style_only: '写作参考', unknown: '待判断' };
@@ -117,8 +117,9 @@ export function Modal({ title, children, close, className = '' }: { title: strin
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><div className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref}><header className="modal-header"><h2>{title}</h2><button className="icon-button" aria-label="关闭" onClick={close}><X size={19} /></button></header>{children}</div></div>;
 }
 
-export function DocumentTable({ documents, registries, open, compact = false }: { documents: DocumentRecord[]; registries?: Registries; open: (id: string) => void; compact?: boolean }) {
-  return <div className="table-scroll"><table className={`document-table ${compact ? 'compact' : ''}`}><thead><tr><th>资料名称</th><th>文档类型</th>{!compact && <th>领域 / 主题 / 产品</th>}<th>{compact ? '来源' : '权威级别'}</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{documents.map(doc => <tr key={doc.id}>
+export function DocumentTable({ documents, registries, open, compact = false, selectedIds, onSelect }: { documents: DocumentRecord[]; registries?: Registries; open: (id: string) => void; compact?: boolean; selectedIds?:Set<string>; onSelect?:(id:string,checked:boolean)=>void }) {
+  return <div className="table-scroll"><table className={`document-table ${compact ? 'compact' : ''}`}><thead><tr>{onSelect&&<th className="selection-cell"><span className="sr-only">选择资料</span></th>}<th>资料名称</th><th>文档类型</th>{!compact && <th>领域 / 主题 / 产品</th>}<th>{compact ? '来源' : '权威级别'}</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{documents.map(doc => <tr key={doc.id} className={selectedIds?.has(doc.id)?'selected-document':''}>
+    {onSelect&&<td className="selection-cell"><input type="checkbox" aria-label={`选择 ${doc.title || doc.filename}`} checked={selectedIds?.has(doc.id)??false} onChange={event=>onSelect(doc.id,event.target.checked)}/></td>}
     <td><button className="document-link" onClick={() => open(doc.id)}><FileIcon filename={doc.filename} small /><span><strong>{doc.title || doc.filename}</strong><small>{compact ? doc.filename : `${doc.filename} · ${sourceLabels[doc.sourceType] || doc.sourceType} · v${doc.versionNumber} · ${doc.chunkCount} 个片段`}</small></span></button></td>
     <td><span className="type-text">{label(registries?.documentTypes, doc.classification?.documentType.value)}</span>{!compact && <Confidence field={doc.classification?.documentType} />}</td>
     {!compact && <td className="table-tags"><Tags values={doc.classification?.applications.value} registry={registries?.applications} max={1} /><Tags values={doc.classification?.topics.value} registry={registries?.topics} max={2} /><Tags values={doc.classification?.products.value} max={1} /></td>}

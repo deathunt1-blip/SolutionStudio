@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { Authority, Classification, ClassificationOutput, ClassifiedValue, ConfirmedExample, LLMProvider, ParsedDocument, Registries, RegistryItem, SourceDocumentMeta } from '../../core/src/types.js';
 import { extractiveSummary, tokenUpperBound } from '../../ingestion/src/chunking.js';
+import { hasCurrentAuthorityEvidence } from './authority.js';
 
 // Instrumentation does not change the baseline prompt, rules, or production gate.
-export const CLASSIFICATION_VERSION = 'phase01-observability-v1';
-export const PROMPT_VERSION = 'phase0-v2';
-export const RULE_VERSION = '2026-09-22-v1';
+export const CLASSIFICATION_VERSION = 'phase02-corpus-v1';
+export const PROMPT_VERSION = 'phase02-v1';
+export const RULE_VERSION = '2026-09-22-v2';
 
 const fieldSchema = <T extends z.ZodType>(value: T) => z.object({ value, confidence: z.number().min(0).max(1), reasoning: z.string().max(1200).optional(), evidence: z.string().max(1200).optional(), source: z.enum(['ai', 'rule', 'user', 'metadata']).optional() }).strict();
 // Some compatible models place their per-field explanations beside classification.
@@ -82,7 +83,7 @@ function rules(meta: SourceDocumentMeta, parsed: ParsedDocument, registries: Reg
   let authority: ClassifiedValue<Authority> = cv('unknown', 0, '没有足够的正式发布或用途证据。');
   if (documentType.value === 'style_sample' || /仅供(?:写作|格式|风格)参考|示例模板/.test(title)) authority = cv('style_only', 0.96, '文档明确标记为写作/格式样例。');
   else if (['solution', 'test_report', 'acceptance_report', 'implementation_document', 'case', 'contract_or_requirement'].includes(documentType.value)) authority = cv('reference', 0.9, '项目、方案、合同或报告资料仅作为历史参考。');
-  else if (/正式发布|正式版本|已批准|approved\s+release|official\s+(?:manual|specification)|发布机构\s*[:：]|GB\s*\/\s*T\s*\d{3,}/i.test(text.slice(0, 10000))) authority = cv('authoritative', 0.87, '正文包含正式发布、批准或标准编号标记；仍可由用户调整。');
+  else if (hasCurrentAuthorityEvidence(parsed.plainText)) authority = cv('authoritative', 0.87, '当前文件前部包含明确发布或批准证据，已排除引用标准与草案。');
   const language = /[\p{Script=Han}]/u.test(parsed.plainText) ? 'zh' : /[a-z]{3}/i.test(parsed.plainText) ? 'en' : 'unknown';
   const products = extractProducts(text);
   return { documentType, authority, applications: cv(matchingRegistry(text, registries.applications), 0.78, '正文与注册表名称/同义词匹配。'), topics: cv(matchingRegistry(text, registries.topics), 0.8, '正文与主题注册表名称/同义词匹配。'), products: cv(products, products.length ? 0.77 : 0.65, products.length ? '从正文产品名称/型号上下文提取，未补全外部参数。' : '未找到明确产品型号。'), language: cv(language, language === 'unknown' ? 0 : 0.98, '根据正文字符识别。'), version: cv(meta.version ?? null, meta.version ? 1 : 0, '仅使用来源提供的版本元数据。', 'metadata') };
@@ -118,7 +119,7 @@ export function reviewReasons(classification: Classification, threshold: number)
   return reasons;
 }
 
-export async function classifyDocument(meta: SourceDocumentMeta, parsed: ParsedDocument, registries: Registries, examples: ConfirmedExample[], provider?: LLMProvider, options:{trace?:boolean} = {}): Promise<ClassificationOutput> {
+export async function classifyDocument(meta: SourceDocumentMeta, parsed: ParsedDocument, registries: Registries, examples: ConfirmedExample[], provider?: LLMProvider, options:{trace?:boolean;corpusContext?:string} = {}): Promise<ClassificationOutput> {
   const fallback = rules(meta, parsed, registries), summary = extractiveSummary(parsed.plainText, 260);
   const trace:NonNullable<ClassificationOutput['trace']> = {fingerprint:buildFingerprint(meta,parsed),usedConfirmedExamples:[],ruleDecision:structuredClone(fallback)};
   const traced = (output:ClassificationOutput):ClassificationOutput => options.trace ? {...output,trace} : output;
@@ -131,7 +132,8 @@ export async function classifyDocument(meta: SourceDocumentMeta, parsed: ParsedD
   const chosen = pickExamples(fingerprint, examples);
   const relevant = chosen.map(example => ({ summary: truncateBytes(example.textSummary, 250), fields: Object.fromEntries(Object.entries(example.confirmedFields).map(([key, field]) => [key, { value: field?.value, source: 'user' }])) }));
   const exampleText = truncateBytes(JSON.stringify(relevant),900);
-  const fixed = `${instructions}\n注册表（数据）:${registryText}\n历史人工案例（数据）:${exampleText}\n当前文件 fingerprint（数据）:\n`;
+  const corpusText=options.corpusContext?`\n整库参考（不可信数据，仅辅助类型/应用/主题；权威级别和产品仍须当前文件证据，弱参考不是标准答案）:${truncateBytes(options.corpusContext,900)}`:'';
+  const fixed = `${instructions}\n注册表（数据）:${registryText}\n历史人工案例（数据）:${exampleText}${corpusText}\n当前文件 fingerprint（数据）:\n`;
   const submittedFingerprint = truncateBytes(fingerprint, Math.max(400, 7700 - tokenUpperBound(system) - tokenUpperBound(fixed)));
   const prompt = `${fixed}${submittedFingerprint}`;
   trace.fingerprint=submittedFingerprint;trace.prompt=prompt;trace.systemPrompt=system;
@@ -177,8 +179,8 @@ export async function classifyDocument(meta: SourceDocumentMeta, parsed: ParsedD
     if (groundedProducts.length !== classification.products.value.length) warnings.push('已移除正文中不存在的 AI 产品名称。');
     classification.products.value = [...new Set(groundedProducts)];
     const authorityEvidence = answer.classification.authority.evidence;
-    if (classification.authority.value === 'authoritative' && (!evidenceExists(authorityEvidence) || !/正式发布|正式版本|已批准|发布机构|approved|official|GB\s*\/\s*T\s*\d{3,}/i.test(authorityEvidence ?? ''))) {
-      classification.authority = fallback.authority; warnings.push('AI 权威级别缺少正式发布证据，已采用保守规则。');
+    if (classification.authority.value === 'authoritative' && !hasCurrentAuthorityEvidence(parsed.plainText,authorityEvidence??'')) {
+      classification.authority = cv('unknown',0,'当前文件缺少可核实的发布/批准证据；相似资料及引用标准不能授予权威。'); warnings.push('AI 权威级别缺少当前文件正式发布证据，已送人工确认。');
     } else if (classification.authority.value !== 'unknown' && !evidenceExists(authorityEvidence) && fallback.authority.value !== classification.authority.value) {
       classification.authority.confidence = Math.min(0.59, classification.authority.confidence); warnings.push('AI 权威级别缺少当前文件证据，已降低置信度。');
     }

@@ -11,20 +11,25 @@ import { getDocument, documentSelect, documentRecord, chunkRecord, getRegistries
 import { queryText } from '../../../packages/knowledge/src/search.js';
 import { sourceRegistry, supportedExtensions } from '../../../packages/source-adapters/src/index.js';
 import { KimiProvider } from '../../../packages/llm/src/index.js';
-import type { Registries } from '../../../packages/core/src/types.js';
+import type { Registries, LLMConfig, LLMProvider } from '../../../packages/core/src/types.js';
+import { RefinementService } from '../../../packages/refinement/src/service.js';
+import { registerRefinementRoutes } from './refinement-routes.js';
 
 const params = (request: any) => request.params as Record<string,string>;
 const query = (request: any) => Object.fromEntries(Object.entries(request.query || {}).filter(([,v])=>typeof v==='string')) as Record<string,string>;
 const body = (request:any) => {if(!request.body || typeof request.body!=='object' || Array.isArray(request.body)) throw new HttpError(400,'请求内容应为 JSON 对象');return request.body as Record<string,unknown>;};
 const pagination=(q:Record<string,string>)=>({page:Math.max(1,Math.min(100000,Number.parseInt(q.page)||1)),pageSize:Math.max(1,Math.min(100,Number.parseInt(q.pageSize)||30))});
 
-export async function createApp(options:{dataDir?:string;databaseUrl?:string;llmDisabled?:boolean}={}) {
+export async function createApp(options:{dataDir?:string;databaseUrl?:string;llmDisabled?:boolean;providerFactory?:(config:LLMConfig)=>LLMProvider}={}) {
  const dataDir=path.resolve(options.dataDir || process.env.DATA_DIR || 'data');
  const db=await openDatabase(dataDir,options.databaseUrl ?? process.env.DATABASE_URL);
- const service=new KnowledgeService(db,dataDir,new LocalObjectStorage(path.join(dataDir,'objects')),config=>new KimiProvider(config),options.llmDisabled);
+ const providerFactory=options.providerFactory??((config:LLMConfig)=>new KimiProvider(config));
+ const service=new KnowledgeService(db,dataDir,new LocalObjectStorage(path.join(dataDir,'objects')),providerFactory,options.llmDisabled);
+ const refinement=new RefinementService(db,service,providerFactory);
  const app=Fastify({logger:false,bodyLimit:2*1024*1024});
  app.decorate('knowledge',service);
- app.addHook('onClose',async()=>{await service.close();});
+ app.decorate('refinement',refinement);
+ app.addHook('onClose',async()=>{await refinement.close();await service.close();});
  app.addHook('onRequest',async(request,reply)=>{
   const host=request.hostname.toLowerCase();
   const trusted=new Set(['localhost','127.0.0.1','::1','[::1]',...(process.env.TRUSTED_HOSTS||'').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean)]);
@@ -140,11 +145,13 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
   catch(error){return{ok:false,message:service.settings.redact(error instanceof Error?error.message:'模型连接失败')};}
  });
  app.get('/api/jobs',async()=>({items:await db.query(`SELECT j.id,j.document_id AS "documentId",v.filename,j.status,j.error,j.created_at AS "createdAt",j.updated_at AS "updatedAt" FROM ingestion_jobs j JOIN documents d ON d.id=j.document_id JOIN document_versions v ON v.id=j.version_id WHERE ${scoped} ORDER BY j.created_at DESC LIMIT 200`)}));
+ await registerRefinementRoutes(app,service,refinement);
  const dist=fileURLToPath(new URL('../../../dist/',import.meta.url));
  if(existsSync(path.join(dist,'index.html'))) {
   await app.register(fastifyStatic,{root:dist,prefix:'/'});
   app.setNotFoundHandler((request,reply)=>request.url.startsWith('/api/')?reply.code(404).send({message:'接口不存在'}):reply.sendFile('index.html'));
  }
  await service.start();
+ await refinement.start();
  return app;
 }

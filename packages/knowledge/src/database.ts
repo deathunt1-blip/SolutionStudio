@@ -33,6 +33,12 @@ export async function openDatabase(dataDir: string, databaseUrl?: string): Promi
   const migration = await readFile(new URL('../../../migrations/001_initial.sql', import.meta.url), 'utf8');
   // Both engines execute the same PostgreSQL schema, including native tsvector / GIN.
   if (pool) await pool.query(migration); else await embedded!.exec(migration);
+  for (const [version,filename] of [[2,'002_canonical_metadata.sql'],[3,'003_refinement.sql']] as const) {
+    const applied=await db.query('SELECT version FROM schema_migrations WHERE version=$1',[version]);
+    if(applied.length)continue;
+    const sql=await readFile(new URL(`../../../migrations/${filename}`,import.meta.url),'utf8');
+    await db.transaction(async tx=>{if(embedded)await embedded.exec(sql);else await tx.query(sql);await tx.query('INSERT INTO schema_migrations(version) VALUES($1) ON CONFLICT DO NOTHING',[version]);});
+  }
   await db.transaction(async tx => {
     await tx.query("INSERT INTO schema_migrations(version) VALUES (1) ON CONFLICT DO NOTHING");
     await tx.query("INSERT INTO organizations VALUES ('default','Default organization') ON CONFLICT DO NOTHING");

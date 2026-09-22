@@ -82,7 +82,7 @@ describe('grounded classification and confidence gates', () => {
     const provider: LLMProvider = { generate: async () => ({ content: `\`\`\`json\n${JSON.stringify(response({ topics: field(['PTP', 'IEEE1588', 'invented']), products: field(['MODEL-Z7', 'FAKE-999']), authority: { ...field('authoritative'), evidence: 'not in document' } }))}\n\`\`\`` }) };
     const output = await classifyDocument(file('技术方案.md', '').meta, parsed('技术方案。机器人设备 MODEL-Z7 支持 PTP 时钟同步。'), registries, [], provider);
     expect(output.classification.topics.value).toEqual(['synchronization']); expect(output.classification.products.value).toEqual(['MODEL-Z7']);
-    expect(output.classification.authority.value).toBe('reference'); expect(output.warnings.length).toBeGreaterThan(0);
+    expect(output.classification.authority.value).toBe('unknown'); expect(reviewReasons(output.classification,0.6)).toContain('权威级别需要确认'); expect(output.warnings.length).toBeGreaterThan(0);
   });
   it('only key fields block review, and unknown blocks even at confidence 1', () => {
     const value = classification(); value.topics.confidence = 0.1; value.products.confidence = 0;
