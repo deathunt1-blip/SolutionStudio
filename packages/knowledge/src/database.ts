@@ -3,14 +3,18 @@ import { Pool } from 'pg';
 import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { Registries } from '../../core/src/types.js';
+import { acquireDatabaseLock } from './database-lock.js';
 
 export interface Connection { query<T = Record<string, any>>(sql: string, values?: unknown[]): Promise<T[]> }
 export interface Database extends Connection { kind: 'postgres'|'pglite'; transaction<T>(fn: (db: Connection) => Promise<T>): Promise<T>; close(): Promise<void> }
 
 export async function openDatabase(dataDir: string, databaseUrl?: string): Promise<Database> {
   await mkdir(dataDir, { recursive: true });
-  const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : null;
-  const embedded = pool ? null : new PGlite(path.join(dataDir, 'postgres'));
+  const releaseLock=databaseUrl?async()=>{}:await acquireDatabaseLock(dataDir);
+  let pool:Pool|null=null,embedded:PGlite|null=null;
+  try {
+  pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : null;
+  embedded = pool ? null : new PGlite(path.join(dataDir, 'postgres'));
   if (embedded) await embedded.waitReady;
   let tail: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(fn: () => Promise<T>) => { const task = tail.then(fn, fn); tail = task.catch(() => {}); return task; };
@@ -28,7 +32,7 @@ export async function openDatabase(dataDir: string, databaseUrl?: string): Promi
       catch (error) { await conn.query('ROLLBACK'); throw error; }
       finally { client?.release(); }
     }),
-    async close() { await tail; if (pool) await pool.end(); else await embedded!.close(); },
+    async close() { await tail; try { if (pool) await pool.end(); else await embedded!.close(); } finally { await releaseLock(); } },
   };
   const migration = await readFile(new URL('../../../migrations/001_initial.sql', import.meta.url), 'utf8');
   // Both engines execute the same PostgreSQL schema, including native tsvector / GIN.
@@ -51,6 +55,11 @@ export async function openDatabase(dataDir: string, databaseUrl?: string): Promi
     }
   });
   return db;
+  } catch(error) {
+    try { if(pool)await pool.end();else if(embedded?.ready&&!embedded.closed)await embedded.close(); }
+    finally { await releaseLock(); }
+    throw error;
+  }
 }
 
 export const registryTables = { documentTypes: 'document_types', applications: 'applications', topics: 'topics' } as const;
