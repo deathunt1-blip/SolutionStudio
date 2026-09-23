@@ -1,4 +1,12 @@
-# Architecture — Phase 0.2.1
+# Architecture — v0.2.2
+
+## Document identity and deduplication
+
+`packages/deduplication` owns the replaceable `DuplicateDetector`, bounded lexical candidate generation, normalized text/table hashes, suggestion groups, source references, confirmation snapshots and retrieval buckets. Migration 006 adds logical canonical pointers without deleting any documents or originals. Exact/content groups can have multiple members; near/version suggestions remain pairwise. Confirmation and undo are transactional and reject stale or cyclic/overlapping relationships.
+
+`KnowledgeService.upload` checks current hashes before parsing, attaches exact origins and preserves their filenames/bytes. A changed remote origin forks shared knowledge rather than updating unrelated sources; removing an origin only archives a canonical group when no live origin remains. Ingestion jobs cannot reactivate superseded documents. Post-index detection produces suggestions without changing titles, classification or authority.
+
+Retriever and corpus context consume current canonical documents. Active duplicate proposals form retrieval buckets before pagination; dismissed, stale, possible-version and merely similar proposals do not suppress independent documents. Structured facts retain their existing dataset-specific mapping and revision lifecycle. See [deduplication details](docs/DEDUPLICATION.md).
 
 ## Boundaries
 

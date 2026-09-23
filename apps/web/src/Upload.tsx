@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { ArrowUpFromLine, CheckCircle2, Copy, FileUp, LoaderCircle, RotateCcw, Upload, XCircle } from 'lucide-react';
 import type { DocumentRecord } from '../../../packages/core/src/types.js';
 import { uploadFile, type UploadResult } from './api.js';
+import { browseDuplicates } from './Duplicates.js';
 import { FileIcon, Status, supportedFiles, type Notify } from './ui.js';
 
 export interface UploadItem { id: string; file: File; progress: number; state: 'waiting' | 'uploading' | 'queued' | 'duplicate' | 'error'; documentId?: string; message?: string }
@@ -52,13 +53,14 @@ export function UploadList({ manager, documents = [], open }: { manager: UploadM
   if (!manager.items.length) return null;
   const completed = manager.items.filter(item => !['waiting', 'uploading'].includes(item.state)).length;
   return <section className="panel upload-results"><div className="panel-heading"><div><h2>本次导入 <span className="count-pill">{manager.items.length}</span></h2><p>{completed} / {manager.items.length} 份已检查，资料会在后台继续处理</p></div>{completed === manager.items.length && <button className="text-button subtle" onClick={manager.clear}>清除记录</button>}</div>
+    {manager.items.some(item => item.state === 'duplicate') && <div className="duplicate-upload-callout"><Copy size={15} /><span>{manager.items.filter(item => item.state === 'duplicate').length} 份完全重复文件已关联到现有资料，保留新增来源。</span><button className="text-button" onClick={() => browseDuplicates()}>查看重复资料</button></div>}
     <div className="upload-list">{manager.items.map(item => {
       const doc = documents.find(document => document.id === item.documentId);
       return <div className="upload-row" key={item.id}><FileIcon filename={item.file.name} small /><div className="upload-file"><strong>{item.file.name}</strong><small>{(item.file.size / 1024 / 1024).toFixed(2)} MB {item.message ? ` · ${item.message}` : ''}</small>{item.state === 'uploading' && <progress max={100} value={item.progress} aria-label={`${item.file.name} 上传进度`} />}</div><div className="upload-result">
         {item.state === 'waiting' && <span className="subtle"><LoaderCircle size={13} />等待上传</span>}
         {item.state === 'uploading' && <span className="subtle">{item.progress}%</span>}
         {item.state === 'queued' && (doc ? <Status status={doc.status} /> : <span className="status status-uploaded"><CheckCircle2 size={13} />已进入处理队列</span>)}
-        {item.state === 'duplicate' && <><span className="status status-needs_review"><Copy size={13} />文件已存在</span><button className="text-button" onClick={() => void manager.retry(item, true)}>仍然导入</button></>}
+        {item.state === 'duplicate' && <><span className="status status-needs_review"><Copy size={13} />完全重复 · 来源已关联</span><button className="text-button" onClick={() => browseDuplicates(item.documentId)}>查看重复资料</button><button className="text-button" onClick={() => void manager.retry(item, true)}>保留独立副本</button></>}
         {item.state === 'error' && <><span className="status status-failed"><XCircle size={13} />上传失败</span><button className="text-button" onClick={() => void manager.retry(item)}><RotateCcw size={12} />重试</button></>}
         {item.documentId && <button className="text-button" onClick={() => open(item.documentId!)}>查看</button>}
       </div></div>;

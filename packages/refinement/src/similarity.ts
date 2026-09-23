@@ -16,7 +16,7 @@ export class PostgreSQLDocumentSimilarityProvider implements DocumentSimilarityP
   const boundedLimit=Math.max(0,Math.min(50,Math.floor(limit)));if(!boundedLimit)return [];
   const cards=this.cards??await buildCorpusCards(this.db);
   const query=queryText(`${document.title} ${document.summary.slice(0,1200)} ${[...document.topics,...document.products].join(' ')}`,'or');
-  const rows=query?await this.db.query<{document_id:string;rank:number}>(`SELECT c.document_id,max(ts_rank_cd(c.search_vector,to_tsquery('simple',$1))) AS rank FROM knowledge_chunks c JOIN documents d ON d.id=c.document_id JOIN document_versions v ON v.id=d.active_version_id WHERE ${scoped} AND d.status IN ('active','needs_review') AND c.version_id=d.active_version_id AND d.id<>$2 AND v.content_hash<>$3 AND c.search_vector @@ to_tsquery('simple',$1) GROUP BY c.document_id ORDER BY rank DESC LIMIT 200`,[query,document.id,document.contentHash??'']):[];
+  const rows=query?await this.db.query<{document_id:string;rank:number}>(`SELECT c.document_id,max(ts_rank_cd(c.search_vector,to_tsquery('simple',$1))) AS rank FROM knowledge_chunks c JOIN documents d ON d.id=c.document_id JOIN document_versions v ON v.id=d.active_version_id WHERE ${scoped} AND d.canonical_document_id IS NULL AND d.status IN ('active','needs_review') AND c.version_id=d.active_version_id AND d.id<>$2 AND v.content_hash<>$3 AND c.search_vector @@ to_tsquery('simple',$1) GROUP BY c.document_id ORDER BY rank DESC LIMIT 200`,[query,document.id,document.contentHash??'']):[];
   const ranks=new Map(rows.map(row=>[row.document_id,Number(row.rank)]));
   const maxRank=Math.max(0,...ranks.values());
   const title=terms(document.title),summary=terms(document.summary),tags=tagTerms(document);

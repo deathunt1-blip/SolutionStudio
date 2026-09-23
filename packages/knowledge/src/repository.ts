@@ -4,7 +4,8 @@ import { registryTables } from './database.js';
 import { queryText } from './search.js';
 
 export const scoped = "d.organization_id='default' AND d.workspace_id='default' AND d.scope='global'";
-export const documentSelect = `SELECT d.id,d.title,d.canonical_title,d.title_source,d.title_confidence,d.title_reasoning,d.title_user,d.status,d.scope,d.created_at,d.updated_at,d.active_version_id,
+export const documentSelect = `SELECT d.id,d.title,d.canonical_title,d.title_source,d.title_confidence,d.title_reasoning,d.title_user,d.status,d.scope,d.created_at,d.updated_at,d.active_version_id,d.canonical_document_id,
+ (SELECT count(*)::int FROM document_source_references r JOIN documents rd ON rd.id=r.document_id WHERE (rd.id=d.id OR rd.canonical_document_id=d.id) AND r.removed=false) AS source_reference_count,
  v.filename,v.version_number,v.content_hash,coalesce(v.ai_summary,v.extractive_summary,v.summary) AS summary,v.extractive_summary,v.ai_summary,v.summary_source,v.parsed_title,v.parse_status,v.parse_warnings,v.review_reasons,v.error,
  s.id AS source_id,s.type AS source_type,sd.source_path,sd.source_uri,sd.remote_version,sd.modified_at AS remote_modified_at,v.source_metadata,
  (SELECT count(*)::int FROM knowledge_chunks c WHERE c.version_id=v.id) AS chunk_count,
@@ -13,7 +14,7 @@ export const documentSelect = `SELECT d.id,d.title,d.canonical_title,d.title_sou
  FROM documents d JOIN document_versions v ON v.id=d.active_version_id JOIN source_documents sd ON sd.id=d.source_document_id JOIN knowledge_sources s ON s.id=sd.source_id`;
 const date = (v: any) => v instanceof Date ? v.toISOString() : String(v);
 export function documentRecord(r: any): DocumentRecord {
- const remote={sourceUri:r.source_uri??undefined,remoteVersion:r.remote_version??undefined,remoteModifiedAt:r.remote_modified_at?date(r.remote_modified_at):undefined,sourceMetadata:r.source_metadata&&Object.keys(r.source_metadata).length?r.source_metadata:undefined};
+ const remote={sourceUri:r.source_uri??undefined,remoteVersion:r.remote_version??undefined,remoteModifiedAt:r.remote_modified_at?date(r.remote_modified_at):undefined,sourceMetadata:r.source_metadata&&Object.keys(r.source_metadata).length?r.source_metadata:undefined,canonicalDocumentId:r.canonical_document_id??undefined,sourceReferenceCount:Number(r.source_reference_count??0)};
  return {...remote,id:r.id,title:r.canonical_title||r.title,canonicalTitle:r.canonical_title||r.title,filename:r.filename,originalFilename:r.filename,parsedTitle:r.parsed_title||undefined,titleSource:r.title_source,titleConfidence:r.title_confidence,titleReasoning:r.title_reasoning,titleLocked:r.title_user||r.title_source==='user',extractiveSummary:r.extractive_summary,aiSummary:r.ai_summary,summarySource:r.summary_source,knowledgeGroups:r.knowledge_groups||[],status:r.status,scope:r.scope,sourceId:r.source_id,sourceType:r.source_type,sourcePath:r.source_path ?? undefined,activeVersionId:r.active_version_id,versionNumber:r.version_number,contentHash:r.content_hash,summary:r.summary,classification:r.classification,reviewReasons:r.review_reasons || [],parseStatus:r.parse_status,parseWarnings:r.parse_warnings || [],createdAt:date(r.created_at),updatedAt:date(r.updated_at),chunkCount:Number(r.chunk_count),error:r.error || undefined};
 }
 export function chunkRecord(r: any): KnowledgeChunk { return {id:r.id,documentId:r.document_id,versionId:r.version_id,order:r.chunk_order,headingPath:r.heading_path,text:r.text,summary:r.summary,topics:r.topics,products:r.products,metadata:r.metadata}; }
@@ -39,7 +40,8 @@ export function filters(input: Record<string,string>, startIndex=0, search=false
  const clauses = [scoped]; const values: unknown[] = [];
  const arg = (v:unknown) => { values.push(v); return `$${values.length+startIndex}`; };
  if (input.status) clauses.push(`d.status=${arg(input.status)}`); else if(search) clauses.push("d.status='active'");
- if(input.source) { const p=arg(input.source); clauses.push(`(s.id=${p} OR s.type=${p})`); }
+ if(search&&input.includeDuplicates!=='1')clauses.push('d.canonical_document_id IS NULL');
+ if(input.source) { const p=arg(input.source); clauses.push(`(s.id=${p} OR s.type=${p} OR EXISTS(SELECT 1 FROM document_source_references sr JOIN knowledge_sources ks ON ks.id=sr.source_id JOIN documents rd ON rd.id=sr.document_id WHERE (rd.id=d.id OR rd.canonical_document_id=d.id) AND sr.removed=false AND (ks.id=${p} OR ks.type=${p})))`); }
  if(input.group)clauses.push(`EXISTS(SELECT 1 FROM knowledge_group_documents gd WHERE gd.document_id=d.id AND gd.group_id=${arg(input.group)})`);
  for (const [key,field] of [['documentType','documentType'],['authority','authority']]) if(input[key]) clauses.push(`EXISTS(SELECT 1 FROM classification_results f WHERE f.version_id=v.id AND f.field='${field}' AND f.value=to_jsonb(${arg(input[key])}::text))`);
  for (const [key,table,col] of [['application','document_applications','application'],['topic','document_topics','topic'],['product','document_products','product']]) if(input[key]) clauses.push(`EXISTS(SELECT 1 FROM ${table} f WHERE f.version_id=v.id AND f.${col}=${arg(input[key])})`);

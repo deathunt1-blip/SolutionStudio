@@ -3,6 +3,7 @@ import type { Connection } from '../../knowledge/src/database.js';
 import { documentRecord, documentSelect, scoped } from '../../knowledge/src/repository.js';
 import type { CorpusContext, CorpusDocumentCard } from './types.js';
 import { PostgreSQLDocumentSimilarityProvider } from './similarity.js';
+import { duplicateRetrievalBuckets } from '../../deduplication/src/retrieval.js';
 
 /** Only the current version's explicit core confirmations can make a strong example. */
 export function documentToCard(document:DocumentRecord, groups:string[]=[]):CorpusDocumentCard {
@@ -17,11 +18,14 @@ export function documentToCard(document:DocumentRecord, groups:string[]=[]):Corp
 
 export async function buildCorpusCards(db:Connection,ids?:string[]):Promise<CorpusDocumentCard[]> {
  if(ids?.length===0)return [];
- const rows=await db.query(`${documentSelect} WHERE ${scoped} AND d.status IN ('active','needs_review')${ids?' AND d.id=ANY($1::text[])':''} ORDER BY d.id`,ids?[ids]:[]);
+ const rows=await db.query(`${documentSelect} WHERE ${scoped} AND d.canonical_document_id IS NULL AND d.status IN ('active','needs_review')${ids?' AND d.id=ANY($1::text[])':''} ORDER BY d.id`,ids?[ids]:[]);
  const groups=await db.query<{document_id:string;name:string}>(`SELECT gd.document_id,g.name FROM knowledge_group_documents gd JOIN knowledge_groups g ON g.id=gd.group_id JOIN documents d ON d.id=gd.document_id WHERE ${scoped} ORDER BY g.name`);
  const memberships=new Map<string,string[]>();
  for(const row of groups)memberships.set(row.document_id,[...(memberships.get(row.document_id)??[]),row.name]);
- return rows.map(row=>documentToCard(documentRecord(row),memberships.get(row.id)??[]));
+ const buckets=await duplicateRetrievalBuckets(db),bucketById=new Map(buckets.documentIds.map((id,index)=>[id,buckets.buckets[index]]));
+ const cards=rows.map(row=>documentToCard(documentRecord(row),memberships.get(row.id)??[]));
+ cards.sort((a,b)=>Number(b.userConfirmed)-Number(a.userConfirmed)||(b.confidence??0)-(a.confidence??0)||a.id.localeCompare(b.id));
+ const seen=new Set<string>();return cards.filter(card=>{const bucket=bucketById.get(card.id)??card.id;if(seen.has(bucket))return false;seen.add(bucket);return true;});
 }
 
 export class CorpusContextBuilder {

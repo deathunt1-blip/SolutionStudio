@@ -30,6 +30,6 @@ describe('one PGlite process per data directory',()=>{
  it('blocks a second database before initialization and preserves the first connection',async()=>{
   const root=await directory(),first=await openDatabase(root);
   try{await expect(openDatabase(root)).rejects.toThrow('already open');expect((await first.query('SELECT 42 AS value'))[0].value).toBe(42);}finally{await first.close();}
-  const reopened=await openDatabase(root);try{expect((await reopened.query('SELECT count(*)::int AS count FROM schema_migrations'))[0].count).toBe(5);}finally{await reopened.close();}
+  const reopened=await openDatabase(root);try{expect((await reopened.query('SELECT count(*)::int AS count FROM schema_migrations'))[0].count).toBe(6);}finally{await reopened.close();}
  },30000);
 });

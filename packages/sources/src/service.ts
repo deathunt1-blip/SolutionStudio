@@ -39,7 +39,7 @@ export class SourceSyncService {
    const old=byId.get(resource.id);
    try{
     if(resource.kind==='unsupported'){
-     if(old?.document_id&&old.document_status!=='archived')await this.knowledge.archive(old.document_id);
+     if(old?.document_id&&old.document_status!=='archived')await this.knowledge.detachSource(source.id,resource.id,old.document_id);
      if(old?.dataset_id)await this.structured.remove(old.dataset_id);
      await this.upsert(source.id,resource,{status:'unsupported'});count.unsupported++;continue;
     }
@@ -55,20 +55,20 @@ export class SourceSyncService {
      if(old?.status==='active'&&old.document_status!=='failed'&&old.content_hash===fingerprint&&old.resource.title===resource.title&&old.resource.remoteUrl===resource.remoteUrl&&JSON.stringify(old.resource.path)===JSON.stringify(resource.path)){
       // Remote revisions may advance without changing content. Preserve the local version and refresh remote tracking only.
       await this.upsert(source.id,resource,{status:'active',hash:fingerprint});
-      if(old.document_id)await this.db.query('UPDATE source_documents SET remote_version=$1,modified_at=$2,source_uri=$3 WHERE id=(SELECT source_document_id FROM documents WHERE id=$4)',[resource.remoteVersion??null,resource.modifiedAt??null,resource.remoteUrl,old.document_id]);
+      if(old.document_id)await this.knowledge.refreshSource(source.id,resource.id,old.document_id,resource.remoteVersion??null,resource.modifiedAt??null,resource.remoteUrl);
       count.unchanged++;continue;
      }
      if(this.prepareDocument)file=await this.prepareDocument(file);
      file.meta.sourcePath=resource.path.join('/');file.meta.sourceUri=resource.remoteUrl;file.meta.version=resource.remoteVersion??file.meta.version;file.meta.modifiedAt=resource.modifiedAt??file.meta.modifiedAt;
      file.meta.metadata={...file.meta.metadata,provider:'feishu',remote_token:resource.remoteToken,remote_url:resource.remoteUrl,remote_version:file.meta.version,remote_modified_at:file.meta.modifiedAt,remote_path:resource.path};
-     const result=await this.knowledge.upload(file,{duplicate:'keep',sourceId:source.id,documentId:old?.document_id,sourceDocumentId:resource.id});
+     const result=await this.knowledge.upload(file,{duplicate:'skip',sourceId:source.id,documentId:old?.document_id,sourceDocumentId:resource.id});
      await this.upsert(source.id,resource,{documentId:result.documentId,hash:fingerprint,status:'active'});if(result.status==='duplicate')count.unchanged++;else if(old?.document_id)count.updated++;else count.added++;
     }
    }catch(error){const message=this.safe(error);errors.push({resourceId:resource.id,message});count.failed++;await this.upsert(source.id,resource,{status:'failed',error:message});}
    finally{await persist();}
   }
   // Incomplete enumeration or retry-only runs can never infer remote deletions.
-  if(listing.complete&&!listing.errors.length&&!run.retry_failed&&!this.stopping){for(const old of prior){if(seen.has(old.remote_id)||old.status==='removed')continue;if(old.document_id){await this.knowledge.archive(old.document_id);await this.db.query('UPDATE source_documents SET removed_from_source=true WHERE id=(SELECT source_document_id FROM documents WHERE id=$1)',[old.document_id]);}if(old.dataset_id)await this.structured.remove(old.dataset_id);await this.db.query("UPDATE source_resources SET status='removed',updated_at=now() WHERE source_id=$1 AND remote_id=$2",[source.id,old.remote_id]);count.removed++;}}
+  if(listing.complete&&!listing.errors.length&&!run.retry_failed&&!this.stopping){for(const old of prior){if(seen.has(old.remote_id)||old.status==='removed')continue;if(old.document_id)await this.knowledge.detachSource(source.id,old.remote_id,old.document_id);if(old.dataset_id)await this.structured.remove(old.dataset_id);await this.db.query("UPDATE source_resources SET status='removed',updated_at=now() WHERE source_id=$1 AND remote_id=$2",[source.id,old.remote_id]);count.removed++;}}
   await persist();await this.db.query('UPDATE source_sync_jobs SET status=$1,completed_at=now() WHERE id=$2',[count.failed||!listing.complete?'partial':'completed',run.id]);
  }
 }

@@ -1,4 +1,10 @@
-# HTTP and integration contract — Phase 0.2.1
+# HTTP and integration contract — v0.2.2
+
+## Deduplication and source references
+
+The complete endpoints, payloads, scan limits and undo behavior are documented in [DEDUPLICATION.md](docs/DEDUPLICATION.md). `POST /api/duplicates/scan` is deterministic and makes no model calls. Confirmations are separate POST requests; there is no automatic merge of existing records. Exact incoming copies reuse current canonical knowledge and persist their own source reference and original object.
+
+Search applies canonical/current status and duplicate-group diversity before count and pagination. Set `includeDuplicates=1` explicitly to inspect the uncollapsed result set. Source filters include attached references, not just the original primary source. A document detail includes `canonicalDocumentId` when merged and `sourceReferenceCount`; `GET /api/documents/:id/sources` provides per-source download references.
 
 Root `package.json` installs all dependencies. Imports use relative paths with `.js` (tsx supports this). Public object keys use camelCase; domain types are in `packages/core/src/types.ts` and `packages/refinement/src/types.ts`. Proposal field names deliberately include `document_type` to match the refinement field contract.
 
