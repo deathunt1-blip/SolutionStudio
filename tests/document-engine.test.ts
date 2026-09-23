@@ -24,8 +24,8 @@ describe('document engine workflow, private context and durable jobs',()=>{
  },30000);
  afterAll(async()=>{await app?.close();if(directory)await rm(directory,{recursive:true,force:true});},30000);
  async function project(name:string,description='建设目标：完成项目应用验证。',report=false){const p=await projects.create({name,description});if(report)await projects.addInput(p.id,{filename:'fixture.scenelab-report',bytes:await createSceneLabFixture()});const c=await projects.getContext(p.id);await projects.confirmContext(p.id,c.revision);return p;}
- async function wait(id:string){for(let i=0;i<200;i++){const job=(await engine.jobs(id))[0];if(job&&!['queued','running'].includes(job.status))return job;await new Promise(r=>setTimeout(r,20));}throw new Error('generation timeout');}
- async function run(doc:GeneratedDocument,sectionIds?:string[],extra:any={}){await engine.generate(doc.id,{expectedRevision:doc.revision,sectionIds,config:{budgetCny:10},...extra});return wait(doc.id);}
+ async function wait(id:string,timeoutMs=4000){const deadline=Date.now()+timeoutMs;let status='not queued';while(Date.now()<deadline){const job=(await engine.jobs(id))[0];if(job){status=job.status;if(!['queued','running'].includes(job.status))return job;}await new Promise(r=>setTimeout(r,20));}throw new Error(`generation timeout after ${timeoutMs}ms (last status: ${status})`);}
+ async function run(doc:GeneratedDocument,sectionIds?:string[],extra:any={},timeoutMs=4000){await engine.generate(doc.id,{expectedRevision:doc.revision,sectionIds,config:{budgetCny:10},...extra});return wait(doc.id,timeoutMs);}
  test('context confirmation is required; plan is data-driven and validates ownership/outline/revisions',async()=>{
   const p=await projects.create({name:'未确认项目',description:'建设目标：验证方案流程。'});await expect(engine.create(p.id)).rejects.toMatchObject({statusCode:409});
   await projects.confirmContext(p.id,(await projects.getContext(p.id)).revision);const doc=await engine.create(p.id);
@@ -170,10 +170,12 @@ describe('document engine workflow, private context and durable jobs',()=>{
  test('adding an AI technical diagram retains original edited prose and its overwrite protection',async()=>{
   const p=await project('配图保留人工正文'),doc=await engine.create(p.id),section=doc.sections[0];
   const edited=await engine.edit(doc.id,section.id,{revision:section.revision,blocks:[{type:'paragraph',text:'人工核验并编辑的技术设计说明。'}]}),before=edited.sections[0].blocks;
-  const job=await run(edited,[section.id],{mode:'diagram',overwriteEdited:true});expect(job.status).toBe('completed');
+  // This path starts a real Chromium renderer; allow bounded startup time on
+  // shared CI runners while still requiring the actual durable job terminal state.
+  const job=await run(edited,[section.id],{mode:'diagram',overwriteEdited:true},25000);expect(job.status).toBe('completed');
   const after=await engine.get(doc.id),updated=after.sections.find(item=>item.id===section.id)!;expect(updated.blocks.filter(block=>block.type!=='diagram')).toEqual(before);expect(updated.blocks.filter(block=>block.type==='diagram')).toHaveLength(1);expect(updated.edited).toBe(true);
   await expect(engine.generate(doc.id,{expectedRevision:after.revision,sectionIds:[section.id],mode:'regenerate'})).rejects.toMatchObject({statusCode:409});
- },15000);
+ },30000);
  test('restart preserves job billing reservation and does not automatically repeat in-flight requests',async()=>{
   const p=await project('恢复任务'),doc=await engine.create(p.id),section=doc.sections[0];await engine.close();
   await engine.db.query("INSERT INTO generation_jobs(id,document_id,status,section_ids,targets,config,reserved_cny) VALUES('interrupted-fixture',$1,'running',$2::jsonb,$3::jsonb,$4::jsonb,0.7)",[doc.id,JSON.stringify([section.id]),JSON.stringify([{id:section.id,revision:section.revision}]),JSON.stringify({model:'kimi-k2.6',temperature:.4,maxTokens:2200,maxContextTokens:12000,budgetCny:1})]);
