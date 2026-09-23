@@ -1,0 +1,10 @@
+import JSZip from 'jszip';
+const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQ0zD6DwACWAF41TTQUQAAAABJRU5ErkJggg==','base64');
+/** Entirely synthetic fixture following SceneLab's real 1.0 producer schema. */
+export async function createSceneLabFixture(edit?:(value:{manifest:any;project:any;analysis:any;zip:JSZip})=>void){
+ const zip=new JSZip(),images=[['deployment','perspective'],['coverage','top'],['coverage','perspective'],['accuracy','perspective'],['accuracy','front'],['accuracy','side']].map(([role,view])=>({role,view,file:`images/${role}_${view}.png`,image_size_px:[1,1],clip_m:5}));
+ const manifest={format:'scenelab-report',format_version:'1.0',project:{name:'实验空间',scheme_revision:31},files:{project:'project.json',analysis:'analysis.json'},images,camera_views:{included:false},diagnostics:{included:true}};
+ const project={scheme_id:'scheme-a',scheme_name:'A',scheme_revision:31,boundary_m:[12,10,5],units:{position:'m',accuracy:'mm'},cameras:[{id:'a',enabled:true,camera_model:{model_name:'K18 · Standard',catalog:{camera:{model:'K18'}}}},{id:'b',enabled:true,camera_model:{model_name:'K18 · Standard',catalog:{camera:{model:'K18'}}}},{id:'disabled',enabled:false,camera_model:{model_name:'K99'}}]};
+ const analysis={scheme_id:'scheme-a',scheme_revision:31,settings:{boundary_m:[12,10,5]},coverage_percent:{ge1:100,ge2:99.5,ge3:95,ge4:90,ge5:85},average_view_count:11.045,accuracy_mm:{mean:.19,p90:.386,p95:.4924875942142447},threshold_percent:{under_0_3mm:77.75,under_0_5mm:95.083},statistics:{accuracy_metric:'theoretical 1-sigma 3D position RMS',coverage_unit:'viewpoints'},diagnostics:{issues:[{internal:'Never publish private diagnostic'}]}};
+ edit?.({manifest,project,analysis,zip});zip.file('manifest.json',JSON.stringify(manifest));zip.file('project.json',JSON.stringify(project));zip.file('analysis.json',JSON.stringify(analysis));for(const image of images)zip.file(image.file,png);return zip.generateAsync({type:'uint8array',compression:'DEFLATE'});
+}

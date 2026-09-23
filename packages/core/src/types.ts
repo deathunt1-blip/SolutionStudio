@@ -12,10 +12,10 @@ export interface SourceDocumentMeta { sourceId: string; sourceType: string; file
 export interface SourceFile { meta: SourceDocumentMeta; buffer: Uint8Array; contentHash: string }
 export interface KnowledgeSourceAdapter { type: string; listDocuments?(config:Record<string,unknown>):Promise<SourceDocumentMeta[]>; fetchDocument(id:string,config?:Record<string,unknown>):Promise<SourceFile>; getVersion?(id:string):Promise<string|null> }
 export interface DocumentParser { type:string; supports(meta:SourceDocumentMeta):boolean; parse(file:SourceFile):Promise<ParsedDocument> }
-export interface LLMRequest { system:string; prompt:string }
+export interface LLMRequest { system:string; prompt:string; responseFormat?:'json_object' }
 export interface LLMResponse { content:string; usage?: { inputTokens:number; outputTokens:number } }
 export interface LLMProvider { generate(request:LLMRequest):Promise<LLMResponse> }
-export interface LLMConfig { baseUrl:string; apiKey:string; model:string; temperature:number; maxTokens:number }
+export interface LLMConfig { baseUrl:string; apiKey:string; model:string; temperature:number; maxTokens:number; requestTimeoutMs?:number; reasoningEffort?:'low'|'high'|'max' }
 export interface RegistryItem { key:string; label:string; aliases:string[] }
 export interface Registries { documentTypes:RegistryItem[]; applications:RegistryItem[]; topics:RegistryItem[] }
 export interface ConfirmedExample { id:string; documentId:string; textSummary:string; confirmedFields:Partial<Classification>; createdAt:string }

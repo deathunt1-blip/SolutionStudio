@@ -145,4 +145,12 @@ export class StructuredService {
    ORDER BY CASE f.authority WHEN 'authoritative' THEN 0 ELSE 1 END,f.product_key,f.field LIMIT 200`,[term,`%${term}%`]);
   return rows.map(fromFact);
  }
+ /** Exact model matching for document generation: K1 must never retrieve K18 parameters. */
+ async productFacts(productKeys:string[]):Promise<StructuredFact[]>{
+  if(!productKeys.length)return [];
+  const rows=await this.db.query(`SELECT f.*,d.title AS dataset_title FROM structured_facts f JOIN structured_datasets d ON d.id=f.source_dataset_id
+   WHERE f.active=true AND d.status='active' AND f.authority='authoritative' AND lower(f.product_key)=ANY($1::text[])
+   ORDER BY f.product_key,f.field,f.id`,[[...new Set(productKeys.map(k=>k.normalize('NFKC').toLowerCase().trim()))]]);
+  return rows.map(fromFact);
+ }
 }

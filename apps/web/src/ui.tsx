@@ -3,7 +3,7 @@ import { AlertCircle, Check, CheckCircle2, Circle, FileSpreadsheet, FileText, Fo
 import type { Authority, ClassifiedValue, DocumentRecord, DocumentStatus, Registries } from '../../../packages/core/src/types.js';
 import { api } from './api.js';
 
-export type Page = 'inbox' | 'library' | 'review' | 'settings' | 'refinement' | 'duplicates';
+export type Page = 'inbox' | 'library' | 'review' | 'settings' | 'refinement' | 'duplicates' | 'projects' | 'structured' | 'sources';
 export interface Stats { total: number; active: number; needsReview: number; failed: number; processing: number; chunks: number; confirmedExamples: number }
 export type Notify = (message: string, kind?: 'success' | 'error') => void;
 export const authorities: Record<Authority, string> = { authoritative: '正式权威', reference: '历史参考', style_only: '写作参考', unknown: '待判断' };

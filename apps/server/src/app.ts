@@ -23,7 +23,11 @@ import { registerSourceRoutes } from './source-routes.js';
 import { decryptDocument } from '../../../packages/documents/src/decrypt.js';
 import { DeduplicationService } from '../../../packages/deduplication/src/service.js';
 import { registerDeduplicationRoutes } from './deduplication-routes.js';
-import { duplicateRetrievalBuckets } from '../../../packages/deduplication/src/retrieval.js';
+import { searchKnowledge } from '../../../packages/knowledge/src/retriever.js';
+import { ProjectService } from '../../../packages/projects/src/service.js';
+import { registerProjectRoutes } from './project-routes.js';
+import { DocumentEngine } from '../../../packages/document-engine/src/service.js';
+import { registerDocumentEngineRoutes } from './document-engine-routes.js';
 
 const params = (request: any) => request.params as Record<string,string>;
 const query = (request: any) => Object.fromEntries(Object.entries(request.query || {}).filter(([,v])=>typeof v==='string')) as Record<string,string>;
@@ -39,6 +43,8 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  service.onDocumentIndexed=id=>duplicates.detectDocument(id);
  const refinement=new RefinementService(db,service,providerFactory);
  const structured=new StructuredService(db);
+ const projects=new ProjectService(db,service,providerFactory);
+ const documentEngine=new DocumentEngine(db,service,projects,structured,providerFactory);
  const secretStore=options.secretStore??new LocalSecretStore(dataDir);
  const connections=new ConnectionService(db,secretStore,options.adapterFactory??((provider,credentials)=>{if(provider!=='feishu')throw new HttpError(400,'连接提供方不受支持');return new FeishuSourceAdapter(credentials);}));
  const sources=new SourceSyncService(db,service,connections,structured,async file=>{
@@ -53,7 +59,9 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  app.decorate('duplicates',duplicates);
  app.decorate('refinement',refinement);
  app.decorate('sourceSync',sources);
- app.addHook('onClose',async()=>{await sources.close();await refinement.close();await service.close();});
+ app.decorate('projects',projects);
+ app.decorate('documentEngine',documentEngine);
+ app.addHook('onClose',async()=>{await documentEngine.close();await sources.close();await refinement.close();await service.close();});
  app.addHook('onRequest',async(request,reply)=>{
   const host=request.hostname.toLowerCase();
   const trusted=new Set(['localhost','127.0.0.1','::1','[::1]',...(process.env.TRUSTED_HOSTS||'').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean)]);
@@ -107,27 +115,7 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
   const rows=await db.query(`${documentSelect} WHERE ${f.where} ORDER BY d.updated_at DESC,d.id LIMIT $${f.values.length+1} OFFSET $${f.values.length+2}`,[...f.values,pageSize,(page-1)*pageSize]);
   return {items:rows.map(documentRecord),total:count[0].total,page,pageSize};
  });
- app.get('/api/search',async request=>{
-  const q=query(request);const {page,pageSize}=pagination(q);const f=filters(q,0,true);
-  // Search always uses the current version. Explicit status supports archived inspection.
-  const expression=queryText(q.q||'');let match='';let rank='1.0';
-  if(expression) {f.values.push(expression);const p=`$${f.values.length}`;match=` AND c.search_vector @@ to_tsquery('simple',${p})`;rank=`ts_rank_cd(c.search_vector,to_tsquery('simple',${p}))`;}
-  else if(q.q?.trim()) return {items:[],total:0};
-  const buckets=q.includeDuplicates==='1'?{documentIds:[],buckets:[]}:await duplicateRetrievalBuckets(db);
-  f.values.push(buckets.documentIds,buckets.buckets);
-  const bucketJoin=`LEFT JOIN unnest($${f.values.length-1}::text[],$${f.values.length}::text[]) AS bucket(document_id,bucket_key) ON bucket.document_id=d.id`;
-  const from=`FROM knowledge_chunks c JOIN documents d ON d.id=c.document_id AND d.active_version_id=c.version_id JOIN document_versions v ON v.id=c.version_id JOIN source_documents sd ON sd.id=d.source_document_id JOIN knowledge_sources s ON s.id=sd.source_id ${bucketJoin} WHERE ${f.where}${match}`;
-  const score=`(${rank} * CASE (SELECT value#>>'{}' FROM classification_results WHERE version_id=v.id AND field='authority') WHEN 'authoritative' THEN 1.2 WHEN 'style_only' THEN 0.6 ELSE 1.0 END * (0.85+0.15/(1+extract(epoch FROM (now()-v.created_at))/31536000)))`;
-  const cte=`WITH matched AS (SELECT c.*,${score} AS score,v.created_at AS version_created_at,
-   coalesce(bucket.bucket_key,'document:'||d.id) AS retrieval_bucket,CASE WHEN bucket.bucket_key IS NULL THEN 3 ELSE 1 END AS bucket_limit ${from}),
-   ranked AS (SELECT *,row_number() OVER(PARTITION BY retrieval_bucket ORDER BY score DESC,version_created_at DESC,chunk_order,id) AS bucket_rank FROM matched),
-   eligible AS (SELECT * FROM ranked WHERE ${q.includeDuplicates==='1'?'true':'bucket_rank<=bucket_limit'})`;
-  const count=await db.query(`${cte} SELECT count(*)::int AS total FROM eligible`,f.values);
-  const rows=await db.query(`${cte} SELECT * FROM eligible ORDER BY score DESC,version_created_at DESC,chunk_order,id LIMIT $${f.values.length+1} OFFSET $${f.values.length+2}`,[...f.values,pageSize,(page-1)*pageSize]);
-  const cache=new Map();const items=[];
-  for(const row of rows){if(!cache.has(row.document_id))cache.set(row.document_id,await getDocument(db,row.document_id));items.push({document:cache.get(row.document_id),chunk:chunkRecord(row),score:Number(row.score)});}
-  return {items,total:count[0].total};
- });
+ app.get('/api/search',async request=>searchKnowledge(db,query(request)));
  app.get('/api/documents/:id',async request=>{
   const document=await getDocument(db,params(request).id);if(!document)throw new HttpError(404,'资料不存在');
   const chunks=await db.query('SELECT * FROM knowledge_chunks WHERE version_id=$1 ORDER BY chunk_order',[document.activeVersionId]);
@@ -191,6 +179,8 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  await registerRefinementRoutes(app,service,refinement);
  await registerSourceRoutes(app,connections,sources,structured,service,providerFactory);
  await registerDeduplicationRoutes(app,duplicates);
+ await registerProjectRoutes(app,projects);
+ await registerDocumentEngineRoutes(app,documentEngine);
  const dist=fileURLToPath(new URL('../../../dist/',import.meta.url));
  if(existsSync(path.join(dist,'index.html'))) {
   await app.register(fastifyStatic,{root:dist,prefix:'/'});
@@ -199,5 +189,6 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  await service.start();
  await refinement.start();
  await sources.start();
+ await documentEngine.start();
  return app;
 }

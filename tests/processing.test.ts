@@ -4,6 +4,7 @@ import { parseDocument } from '../packages/parsers/src/index.js';
 import { buildFingerprint, classifyDocument, reviewReasons } from '../packages/classification/src/index.js';
 import { chunkDocument, tokenUpperBound } from '../packages/ingestion/src/chunking.js';
 import { KimiProvider } from '../packages/llm/src/index.js';
+import { Agent } from 'undici';
 import type { Classification, ConfirmedExample, LLMProvider, ParsedDocument, Registries, SourceFile } from '../packages/core/src/types.js';
 
 const registries: Registries = {
@@ -130,9 +131,46 @@ describe('Kimi API boundary', () => {
   it('honors configured model/temperature and uses instant mode with bounded response', async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 2 } }), { status: 200 })); vi.stubGlobal('fetch', fetcher);
     const provider = new KimiProvider({ baseUrl: 'https://api.example.test/v1', apiKey: 'private-token', model: 'kimi-k2.6', temperature: 0.6, maxTokens: 1500 });
-    const result = await provider.generate({ system: 'JSON only', prompt: 'classify' });
+    const result = await provider.generate({ system: 'JSON only', prompt: 'classify', responseFormat:'json_object' });
     const args = fetcher.mock.calls[0] as unknown as [string, RequestInit]; const body = JSON.parse(args[1].body as string);
-    expect(body.thinking.type).toBe('disabled'); expect(body.temperature).toBe(0.6); expect(body.model).toBe('kimi-k2.6'); expect(result.usage?.inputTokens).toBe(10);
+    expect(body.thinking.type).toBe('disabled'); expect(body.response_format).toEqual({type:'json_object'}); expect(body.temperature).toBe(0.6); expect(body.model).toBe('kimi-k2.6'); expect(body.max_tokens).toBe(1500); expect(body).not.toHaveProperty('max_completion_tokens'); expect(body).not.toHaveProperty('reasoning_effort'); expect(result.usage?.inputTokens).toBe(10);
+  });
+  it.each([undefined, 'low', 'high', 'max'] as const)('uses K3 reasoning controls (%s) and returns only the final JSON answer', async reasoningEffort => {
+    const answer='{"result":"final answer"}',reasoning='private reasoning '.repeat(35000);
+    const fetcher=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:answer,reasoning_content:reasoning},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:120000,completion_tokens_details:{reasoning_tokens:119900}}}),{status:200}));vi.stubGlobal('fetch',fetcher);
+    const provider=new KimiProvider({baseUrl:'https://api.example.test/v1',apiKey:'private-token',model:'kimi-k3',temperature:1,maxTokens:131072,reasoningEffort});
+    const result=await provider.generate({system:'JSON only',prompt:'Write a proposal',responseFormat:'json_object'});
+    const args=fetcher.mock.calls[0] as unknown as [string,RequestInit],body=JSON.parse(args[1].body as string);
+    expect(body).toMatchObject({model:'kimi-k3',max_completion_tokens:131072,reasoning_effort:reasoningEffort??'max',response_format:{type:'json_object'}});
+    expect(body).not.toHaveProperty('max_tokens');expect(body).not.toHaveProperty('temperature');expect(body).not.toHaveProperty('thinking');
+    expect(result).toEqual({content:answer,usage:{inputTokens:100,outputTokens:120000}});expect(JSON.stringify(result)).not.toContain('private reasoning');
+  });
+  it('enforces model-specific output token ceilings before issuing requests',()=>{
+    const config={baseUrl:'https://api.example.test/v1',apiKey:'private-token',temperature:1};
+    expect(()=>new KimiProvider({...config,model:'kimi-k3',maxTokens:1048576})).not.toThrow();
+    expect(()=>new KimiProvider({...config,model:'kimi-k3',maxTokens:1048577})).toThrow('采样参数无效');
+    expect(()=>new KimiProvider({...config,model:'kimi-k2.6',maxTokens:32769})).toThrow('采样参数无效');
+    expect(()=>new KimiProvider({...config,model:'compatible-model',maxTokens:32769})).toThrow('采样参数无效');
+  });
+  it('shares the long-request connection pool and retains each request overall abort deadline',async()=>{
+    const fetcher=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:'{}'},finish_reason:'stop'}]}),{status:200}));vi.stubGlobal('fetch',fetcher);
+    const timeout=vi.spyOn(AbortSignal,'timeout');
+    try{
+      const base={baseUrl:'https://api.example.test/v1',apiKey:'private-token',model:'kimi-k3',temperature:1,maxTokens:131072,requestTimeoutMs:600000};
+      await new KimiProvider(base).generate({system:'JSON',prompt:'First chapter'});
+      await new KimiProvider(base).generate({system:'JSON',prompt:'Second chapter'});
+      const requests=fetcher.mock.calls.map(call=>(call as unknown as [string,RequestInit&{dispatcher:Agent}])[1]);
+      expect(requests[0].dispatcher).toBeInstanceOf(Agent);expect(requests[1].dispatcher).toBe(requests[0].dispatcher);
+      expect(requests[0].signal).toBeInstanceOf(AbortSignal);expect(requests[1].signal).not.toBe(requests[0].signal);
+      expect(timeout).toHaveBeenNthCalledWith(1,600000);expect(timeout).toHaveBeenNthCalledWith(2,600000);
+    }finally{timeout.mockRestore();}
+  });
+  it('retains a finite response cap for K3 and never exposes reasoning-only responses',async()=>{
+    const cancel=vi.fn(),large=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(new Uint8Array(16*1024*1024+1));},cancel});
+    const fetcher=vi.fn().mockResolvedValueOnce(new Response(large,{status:200})).mockResolvedValueOnce(new Response(JSON.stringify({choices:[{message:{content:null,reasoning_content:'private-only-reasoning'},finish_reason:'stop'}]}),{status:200}));vi.stubGlobal('fetch',fetcher);
+    const provider=new KimiProvider({baseUrl:'https://api.example.test/v1',apiKey:'private-token',model:'kimi-k3',temperature:1,maxTokens:131072});
+    await expect(provider.generate({system:'JSON',prompt:'Generate'})).rejects.toThrow('响应超过大小限制');expect(cancel).toHaveBeenCalledTimes(1);
+    await expect(provider.generate({system:'JSON',prompt:'Generate'})).rejects.toThrow('未返回可用的文本内容');expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it('does not expose upstream body or key on authentication errors', async () => {
     const fetcher = vi.fn(async () => new Response('sk-private-token sensitive provider detail', { status: 401 })); vi.stubGlobal('fetch', fetcher);
