@@ -18,7 +18,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
  let calls=0,failedTitle='',customerDraft:'clean'|'repairable'|'blocked'='clean',slow:Promise<void>|undefined;const prompts:any[]=[];const providerConfigs:any[]=[];
  beforeAll(async()=>{
   directory=await mkdtemp(path.join(tmpdir(),'studio-docengine-'));
-  app=await createApp({dataDir:directory,providerFactory:config=>{providerConfigs.push(config);return {generate:async request=>{calls++;await slow;const repairAt=request.prompt.indexOf('\n请修订以下草稿'),c=JSON.parse(repairAt<0?request.prompt:request.prompt.slice(0,repairAt));prompts.push(c);if(c.sectionTitle===failedTitle)throw new Error('synthetic section failure');return {content:JSON.stringify({content:[{type:'paragraph',text:customerDraft==='blocked'||customerDraft==='repairable'&&repairAt<0?'验收指标尚未明确，待确认。':'系统围绕应用需求组织采集、数据处理和实施流程。'}],used_fact_ids:[],used_knowledge_refs:[],used_asset_refs:[],claims:[]}),usage:{inputTokens:90,outputTokens:40}};}};}});
+  app=await createApp({dataDir:directory,providerFactory:config=>{providerConfigs.push(config);return {generate:async request=>{calls++;await slow;if(!request.responseFormat)return {content:'flowchart LR\n A[采集模块] --> B[数据处理]',usage:{inputTokens:90,outputTokens:40}};const repairAt=request.prompt.indexOf('\n请修订以下草稿'),c=JSON.parse(repairAt<0?request.prompt:request.prompt.slice(0,repairAt));prompts.push(c);if(c.sectionTitle===failedTitle)throw new Error('synthetic section failure');return {content:JSON.stringify({content:[{type:'paragraph',text:customerDraft==='blocked'||customerDraft==='repairable'&&repairAt<0?'验收指标尚未明确，待确认。':'系统围绕应用需求组织采集、数据处理和实施流程。'}],used_fact_ids:[],used_knowledge_refs:[],used_asset_refs:[],claims:[]}),usage:{inputTokens:90,outputTokens:40}};}};}});
   engine=(app as any).documentEngine;projects=(app as any).projects;
   await (app as any).knowledge.settings.patch({llm:{apiKey:'synthetic-test-key',baseUrl:'https://api.moonshot.cn/v1',model:'kimi-k2.6'}});
  },30000);
@@ -167,6 +167,13 @@ describe('document engine workflow, private context and durable jobs',()=>{
   expect(after.context.requirements.protocols.map(r=>r.value)).toEqual(['NTP']);expect(after.context.requirements.goals).toEqual([]);expect(after.context.requirements.installationConstraints.length).toBeGreaterThan(0);
   const local=await projects.queryChunks(p.id,'PTP'),docSource=await engine.retriever.retrieve(p.id,'',[local[0].documentId]),inputSource=await engine.retriever.retrieve(p.id,'',[input.input.id]);expect(docSource.some(s=>s.source.inputId===input.input.id)).toBe(true);expect(inputSource.some(s=>s.source.inputId===input.input.id)).toBe(true);
  });
+ test('adding an AI technical diagram retains original edited prose and its overwrite protection',async()=>{
+  const p=await project('配图保留人工正文'),doc=await engine.create(p.id),section=doc.sections[0];
+  const edited=await engine.edit(doc.id,section.id,{revision:section.revision,blocks:[{type:'paragraph',text:'人工核验并编辑的技术设计说明。'}]}),before=edited.sections[0].blocks;
+  const job=await run(edited,[section.id],{mode:'diagram',overwriteEdited:true});expect(job.status).toBe('completed');
+  const after=await engine.get(doc.id),updated=after.sections.find(item=>item.id===section.id)!;expect(updated.blocks.filter(block=>block.type!=='diagram')).toEqual(before);expect(updated.blocks.filter(block=>block.type==='diagram')).toHaveLength(1);expect(updated.edited).toBe(true);
+  await expect(engine.generate(doc.id,{expectedRevision:after.revision,sectionIds:[section.id],mode:'regenerate'})).rejects.toMatchObject({statusCode:409});
+ },15000);
  test('restart preserves job billing reservation and does not automatically repeat in-flight requests',async()=>{
   const p=await project('恢复任务'),doc=await engine.create(p.id),section=doc.sections[0];await engine.close();
   await engine.db.query("INSERT INTO generation_jobs(id,document_id,status,section_ids,targets,config,reserved_cny) VALUES('interrupted-fixture',$1,'running',$2::jsonb,$3::jsonb,$4::jsonb,0.7)",[doc.id,JSON.stringify([section.id]),JSON.stringify([{id:section.id,revision:section.revision}]),JSON.stringify({model:'kimi-k2.6',temperature:.4,maxTokens:2200,maxContextTokens:12000,budgetCny:1})]);

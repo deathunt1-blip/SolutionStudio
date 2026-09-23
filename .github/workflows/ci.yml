@@ -15,4 +15,10 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install pypdf cryptography msoffcrypto-tool
       - run: npm run build
+      # Ubuntu permits user namespaces for the installed Chrome binary. Keep its
+      # sandbox enabled instead of launching downloaded Chrome with --no-sandbox.
+      - name: Select sandboxed Chrome for diagram tests
+        run: |
+          test -x /opt/google/chrome/chrome
+          echo "PUPPETEER_EXECUTABLE_PATH=/opt/google/chrome/chrome" >> "$GITHUB_ENV"
       - run: npm test

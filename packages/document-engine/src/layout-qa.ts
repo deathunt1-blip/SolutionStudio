@@ -1,6 +1,6 @@
 import type { DocumentBlock, DocumentSection, GeneratedDocument } from './types.js';
 
-export interface LayoutIssue { severity: 'error' | 'warning'; code: 'empty_heading' | 'empty_section' | 'heading_order' | 'table_shape' | 'wide_table' | 'missing_caption' | 'internal_content'; sectionId: string; blockId?: string; message: string }
+export interface LayoutIssue { severity: 'error' | 'warning'; code: 'empty_heading' | 'empty_section' | 'heading_order' | 'table_shape' | 'wide_table' | 'missing_caption' | 'missing_visual' | 'internal_content'; sectionId: string; blockId?: string; message: string }
 export function blockHasContent(block: DocumentBlock): boolean {
   if (block.type === 'paragraph' || block.type === 'heading' || block.type === 'callout') return !!block.text.trim();
   if (block.type === 'list') return block.items.some(item => item.trim());
@@ -8,6 +8,9 @@ export function blockHasContent(block: DocumentBlock): boolean {
   return block.type === 'diagram' ? !!block.source.trim() : block.type === 'asset' ? !!block.assetId : false;
 }
 const metricHeading = /^(?:关键|主要)?技术指标(?:要求)?$/;
+export function missingPlannedVisuals(sections: DocumentSection[]): DocumentSection[] {
+  return sections.filter(section => section.visualPlan?.type && section.visualPlan.type !== 'none' && !section.blocks.some(block => section.visualPlan!.type === 'mermaid' ? block.type === 'diagram' && blockHasContent(block) : block.type === 'asset' && blockHasContent(block)));
+}
 /** Older proposals sometimes contain only an internal question list in this section.
  * Suppress that legacy placeholder, but never silently rewrite customer paragraphs. */
 export function exportableSections(document: GeneratedDocument): DocumentSection[] {
@@ -41,6 +44,7 @@ export function validateDocumentLayout(document: GeneratedDocument): LayoutIssue
     if (![1, 2, 3].includes(section.level) || section.level > priorLevel + 1) add('heading_order', `章节「${section.title}」的标题层级不连续，请先调整目录`, 'error');
     priorLevel = section.level;
     if (!section.blocks.some(blockHasContent)) add('empty_section', `章节「${section.title}」没有正文`);
+    if (missingPlannedVisuals([section]).length) add('missing_visual', `章节「${section.title}」计划的配图尚未添加，请生成技术图或选择项目图片`);
     for (const block of section.blocks) {
       if (block.type === 'heading' && !block.text.trim()) add('empty_heading', '正文中有空标题', 'error', block.id);
       if (block.type === 'table') {

@@ -1,10 +1,10 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Download, ImagePlus, LoaderCircle, Save } from 'lucide-react';
-import type { GeneratedDocument, OutputProfile } from '../../../packages/document-engine/src/types.js';
+import type { GeneratedDocument, OutputProfile, ValidationIssue } from '../../../packages/document-engine/src/types.js';
 import type { ProjectAsset } from '../../../packages/projects/src/types.js';
 import { builtinTheme, resolveTheme } from '../../../packages/document-engine/src/theme.js';
 import { validateDocumentLayout } from '../../../packages/document-engine/src/layout-qa.js';
-import { api, patch } from './api.js';
+import { api, patch, post } from './api.js';
 import { ErrorMessage, Modal } from './ui.js';
 import './export-settings.css';
 
@@ -17,10 +17,10 @@ export function ExportSettings({ document, assets, onSaved, onClose }: ExportSet
   const [title, setTitle] = useState(document.title), [revision, setRevision] = useState(document.revision);
   const [uploadedAssets, setUploadedAssets] = useState<ProjectAsset[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const localAssets = [...assets.filter(asset => asset.projectId === document.projectId), ...uploadedAssets.filter(asset => asset.projectId === document.projectId && !assets.some(current => current.id === asset.id))];
-  const [draftAccepted, setDraftAccepted] = useState(false);
+  const [draftAccepted, setDraftAccepted] = useState(false), [verifiedIssues, setVerifiedIssues] = useState<ValidationIssue[]>();
   const issues = useMemo(() => validateDocumentLayout(document), [document]);
   const blocking = issues.some(issue => issue.severity === 'error');
-  const contentIssues = document.issues;
+  const contentIssues = verifiedIssues ?? document.issues;
   const unfinished = document.sections.filter(section => ['empty', 'failed', 'queued', 'generating'].includes(section.status) && !contentIssues.some(issue => issue.type === 'incomplete' && issue.sectionId === section.id));
   const unsafeContent = contentIssues.some(issue => ['customer_facing','prohibited_claim'].includes(issue.type) && issue.severity === 'error');
   const draftRequired = contentIssues.some(issue => issue.severity === 'error' || issue.type === 'incomplete') || unfinished.length > 0;
@@ -44,10 +44,22 @@ export function ExportSettings({ document, assets, onSaved, onClose }: ExportSet
       const { document: saved } = await patch<{ document: GeneratedDocument }>(`/generated-documents/${document.id}`, { revision, title, outputProfile: profile });
       setRevision(saved.revision); onSaved();
       if (download) {
+        // The source library may have changed since this dialog opened. Show
+        // fresh validation errors before deciding whether this is a review draft.
+        const { issues: latestIssues } = await post<{ issues: ValidationIssue[] }>(`/generated-documents/${document.id}/validate`, {});
+        if (!Array.isArray(latestIssues)) throw new Error('未取得内容校验结果，请重试。');
+        setVerifiedIssues(latestIssues);
+        const latestUnsafe = latestIssues.some(issue => ['customer_facing', 'prohibited_claim'].includes(issue.type) && issue.severity === 'error');
+        if (latestUnsafe) throw new Error('最新内容校验发现客户表达或不当技术承诺问题，请修正后导出。');
+        const issueKey = (issue: ValidationIssue) => JSON.stringify([issue.sectionId, issue.type, issue.severity, issue.message, issue.quote]);
+        const known = new Set(contentIssues.map(issueKey));
+        const latestDraft = latestIssues.some(issue => issue.severity === 'error' || issue.type === 'incomplete') || unfinished.length > 0;
+        const newlyFound = latestIssues.some(issue => (issue.severity === 'error' || issue.type === 'incomplete') && !known.has(issueKey(issue)));
+        if (latestDraft && (!draftAccepted || newlyFound)) { setDraftAccepted(false); throw new Error('最新内容校验发现需要核对的问题，请查看后选择作为审阅稿导出。'); }
         const response = await fetch(`/api/generated-documents/${document.id}/export.docx`);
         if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.message || body.error || '导出失败，请重试'); }
         const url = URL.createObjectURL(await response.blob()), anchor = window.document.createElement('a');
-        anchor.href = url; anchor.download = `${title}${draftRequired ? '（审阅稿）' : ''}.docx`; window.document.body.append(anchor); anchor.click(); anchor.remove();
+        anchor.href = url; anchor.download = `${title}${latestDraft ? '（审阅稿）' : ''}.docx`; window.document.body.append(anchor); anchor.click(); anchor.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       }
       onClose();

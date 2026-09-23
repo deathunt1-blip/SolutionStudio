@@ -34,11 +34,11 @@ describe('export settings interactive request lifecycle',()=>{
   expect(onClose).toHaveBeenCalledTimes(1);
  });
  it('shows an export 422 without closing and retries with the revision inside the saved document envelope',async()=>{
-  const fetcher=vi.fn().mockResolvedValueOnce(response({document:{...proposal,revision:3}})).mockResolvedValueOnce(response({message:'正文含内部审查语言，请修正后导出。'},422)).mockResolvedValueOnce(response({document:{...proposal,revision:4}}));vi.stubGlobal('fetch',fetcher);
+  const fetcher=vi.fn().mockResolvedValueOnce(response({document:{...proposal,revision:3}})).mockResolvedValueOnce(response({issues:[]})).mockResolvedValueOnce(response({message:'正文含内部审查语言，请修正后导出。'},422)).mockResolvedValueOnce(response({document:{...proposal,revision:4}}));vi.stubGlobal('fetch',fetcher);
   const {onSaved,onClose}=await mount();await click('导出 Word');
   expect(onSaved).toHaveBeenCalledTimes(1);expect(onClose).not.toHaveBeenCalled();expect(host.textContent).toContain('正文含内部审查语言，请修正后导出。');
-  expect(host.querySelector('[role=dialog]')).not.toBeNull();expect(fetcher.mock.calls[1][0]).toBe('/api/generated-documents/document/export.docx');
-  await click('保存设置');expect(JSON.parse(fetcher.mock.calls[2][1].body).revision).toBe(3);
+  expect(host.querySelector('[role=dialog]')).not.toBeNull();expect(fetcher.mock.calls[1][0]).toBe('/api/generated-documents/document/validate');expect(fetcher.mock.calls[2][0]).toBe('/api/generated-documents/document/export.docx');
+  await click('保存设置');expect(JSON.parse(fetcher.mock.calls[3][1].body).revision).toBe(3);
   expect(onSaved).toHaveBeenCalledTimes(2);expect(onClose).toHaveBeenCalledTimes(1);
  });
  it('shows fact errors and incomplete chapters, requiring an explicit draft choice before export',async()=>{
@@ -54,5 +54,18 @@ describe('export settings interactive request lifecycle',()=>{
   expect(host.querySelector('.export-content-check [role=alert]')?.textContent).toContain('请修正后导出');
   expect(host.querySelector('.export-content-check input[type=checkbox]')).toBeNull();
   expect([...host.querySelectorAll('button')].find(b=>b.textContent==='导出 Word')!.disabled).toBe(true);
+ });
+ it('requires review-draft consent for errors discovered by fresh validation before any download',async()=>{
+  const issue={id:'fresh',sectionId:'section',severity:'error',type:'unsupported_claim',message:'接口能力缺少已选产品的有效依据。',sourceRefs:[]};
+  const fetcher=vi.fn().mockResolvedValueOnce(response({document:{...proposal,revision:3}})).mockResolvedValueOnce(response({issues:[issue]})).mockResolvedValueOnce(response({document:{...proposal,revision:4}})).mockResolvedValueOnce(response({issues:[{...issue,id:'new-validation-id'}]})).mockResolvedValueOnce(new Response('docx'));
+  vi.stubGlobal('fetch',fetcher);vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:test');const download=vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{});
+  const {onClose}=await mount();await click('导出 Word');
+  expect(fetcher).toHaveBeenCalledTimes(2);expect(onClose).not.toHaveBeenCalled();expect(host.textContent).toContain(issue.message);expect(host.textContent).toContain('最新内容校验发现需要核对的问题');
+  await act(async()=>host.querySelector<HTMLInputElement>('.export-content-check input[type=checkbox]')!.click());await click('作为审阅稿导出');
+  expect(fetcher).toHaveBeenCalledTimes(5);expect(fetcher.mock.calls[4][0]).toBe('/api/generated-documents/document/export.docx');expect(download).toHaveBeenCalledTimes(1);expect((download.mock.instances[0] as HTMLAnchorElement).download).toContain('审阅稿');expect(onClose).toHaveBeenCalledTimes(1);
+ });
+ it('stops on a newly discovered forbidden claim without offering review-draft bypass',async()=>{
+  const fetcher=vi.fn().mockResolvedValueOnce(response({document:{...proposal,revision:3}})).mockResolvedValueOnce(response({issues:[{id:'fresh',sectionId:'section',severity:'error',type:'prohibited_claim',message:'不能保证零误差同步。',sourceRefs:[]}]}));vi.stubGlobal('fetch',fetcher);
+  const {onClose}=await mount();await click('导出 Word');expect(fetcher).toHaveBeenCalledTimes(2);expect(onClose).not.toHaveBeenCalled();expect(host.textContent).toContain('不能保证零误差同步');expect(host.querySelector('.export-content-check input[type=checkbox]')).toBeNull();
  });
 });
