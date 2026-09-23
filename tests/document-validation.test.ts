@@ -114,6 +114,80 @@ describe('typed and source-grounded document fact validation',()=>{
   expect(errors('K18帧率120fps。',context(),[{...manual,label:'通用相机技术手册',evidence:'相机帧率120fps。'}])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim'})]));
   expect(errors('K18支持PTP同步。',context(),[{...manual,label:'K1技术手册',evidence:'K1支持PTP同步。'}])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim'})]));
  });
+ it('reads resolution-at-frame-rate specification cells without treating physical dimensions as pixels',()=>{
+  const c=context(),ref=source('4608x4096@170fps（52°×48°）/Gigabit Ethernet/RJ45/PoE++',{label:'K18 · 产品规格或简称'});
+  expect(errors('K18分辨率4608×4096像素，帧率170fps。',c,[ref])).toEqual([]);
+  expect(errors('K18分辨率4608×4000像素。',c,[ref])).toEqual(expect.arrayContaining([expect.objectContaining({type:'fact_mismatch'})]));
+  for(const evidence of ['4608x4096','4608mm×4096mm@170fps','4608x4096x170']){
+   expect(errors('K18分辨率4608×4096像素。',c,[{...ref,evidence}])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim'})]));
+  }
+ });
+ it('allows grounded standard quotations as design references without exempting nearby project assertions',()=>{
+  const standard=source('完成系统标定后，三维定位精度应不低于1mm。整体系统延迟应≤15ms。',{type:'knowledge_chunk',label:'光学动作捕捉系统团体标准',authority:'authoritative'});
+  const boundary='属于行业设计参考指标，不代表本项目已实测达到该水平，也不构成本项目的验收口径。';
+  const quotes='标准中“完成系统标定后三维定位精度应不低于1mm”以及“整体延迟应≤15ms”';
+  expect(check(quotes+boundary,context(),[standard])).toEqual([]);
+  expect(errors(quotes+boundary+'本项目精度达到0.1mm。',context(),[standard])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'0.1mm'})]));
+  expect(errors(quotes+'且本项目精度已达到0.1mm，'+boundary,context(),[standard])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'0.1mm'})]));
+  expect(errors('标准中“精度应不低于1mm且本项目精度已达到0.1mm”'+boundary,context(),[standard])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'0.1mm'})]));
+  expect(errors('标准中“精度应不低于1mm并实现0.1mm”'+boundary,context(),[standard])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'0.1mm'})]));
+  expect(errors('标准中“延迟应≤1ms”'+boundary,context(),[standard])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'1ms'})]));
+  expect(errors(quotes+boundary,context(),[]).some(issue=>issue.type==='unsupported_claim')).toBe(true);
+  expect(errors('本项目精度达到1mm，整体延迟≤15ms。',context(),[standard]).filter(issue=>issue.type==='unsupported_claim')).toHaveLength(2);
+ });
+ it('keeps selected simulation optics separate from the same model generic product specifications',()=>{
+  const c=engineering();c.lockedFacts=[fact('engineering.opticsSource','report')];
+  c.engineering!.deployment!.opticalConfigurations=[{model:'K18',variant:'K18_8mm',lens:{focalLengthMm:8},hfovDeg:70,vfovDeg:55,maxWorkingDistanceM:47,rangeMode:'custom',cameraIds:['camera-1'],sourceRef:engineeringSource}];
+  const refs=[source('K18视场角52°×48°，镜头焦距12mm，追踪距离30m。',{label:'K18 通用产品规格'})];
+  expect(errors('报告仿真水平视场角70°，报告仿真垂直视场角55°，报告配置镜头焦距8mm，仿真最大距离47m。',c,refs)).toEqual([]);
+  expect(errors('通用产品参数视场角52°，产品规格镜头焦距12mm，产品标称追踪距离30m。',c,refs)).toEqual([]);
+  expect(errors('本次设计采用8mm镜头。',c,refs)).toEqual([]);
+  expect(errors('报告仿真视场角52°，通用产品参数视场角70°。',c,refs).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+  expect(errors('报告仿真水平视场角55°，报告仿真垂直视场角70°。',c,refs).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+  expect(errors('报告配置镜头焦距12mm，通用产品参数镜头焦距8mm。',c,refs).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+  expect(errors('报告仿真最大距离30m，通用产品追踪距离47m。',c,refs).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+  expect(check('视场角为70°。',c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({severity:'warning',message:expect.stringContaining('口径')})]));
+ });
+ it('does not certify physical tracking performance or site dimensions using a simulated working distance',()=>{
+  const c=engineering();c.lockedFacts=[fact('engineering.opticsSource','report')];
+  c.engineering!.deployment!.opticalConfigurations=[{model:'K18',lens:{focalLengthMm:8},maxWorkingDistanceM:47,cameraIds:['camera-1'],sourceRef:engineeringSource}];
+  const refs=[source('K18追踪距离30m。')];
+  expect(errors('报告配置已验证追踪距离47m。',c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'fact_mismatch',quote:'47m'})]));
+  expect(errors('相机实际追踪能力47m。',c,[])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'47m'})]));
+  for(const value of [30,47])expect(errors(`场地长度${value}m。`,c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:`${value}m`})]));
+  expect(errors('系统定位精度8mm。',c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'8mm'})]));
+  const unselected=structuredClone(c);unselected.lockedFacts=[];
+  expect(check('采用8mm镜头。',unselected,refs)).toEqual(expect.arrayContaining([expect.objectContaining({severity:'warning',message:expect.stringContaining('口径')})]));
+ });
+ it('uses the nearest FOV axis in a single optical configuration sentence',()=>{
+  const c=engineering();c.lockedFacts=[fact('engineering.opticsSource','report')];
+  c.engineering!.deployment!.opticalConfigurations=[{model:'K18',lens:{focalLengthMm:8,apertureF:1.4},hfovDeg:72,vfovDeg:67,cameraIds:['camera-1'],sourceRef:engineeringSource}];
+  const prefix='报告仿真光学配置为K18 Standard、8mm焦距、F1.4光圈、';
+  expect(errors(prefix+'水平视场角72°、垂直视场角67°。',c)).toEqual([]);
+  expect(errors(prefix+'垂直视场角67°、水平视场角72°。',c)).toEqual([]);
+  expect(errors(prefix+'水平视场角67°、垂直视场角72°。',c).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+ });
+ it('never promotes an unlabeled millimeter value in a user summary to accuracy evidence',()=>{
+  const c=context();c.lockedFacts=[fact('project.summary','采用报告8mm光学配置',undefined,'项目摘要')];
+  const refs=[source('K18定位精度0.1mm。')];
+  expect(errors('K18定位精度0.1mm。',c,refs)).toEqual([]);
+  expect(errors('K18定位精度8mm。',c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'fact_mismatch',quote:'8mm',sourceRefs:refs})]));
+  expect(errors('K18定位精度8mm。',c,[])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'8mm'})]));
+  c.lockedFacts=[fact('performance.accuracy',.2,'mm','定位指标')];
+  expect(errors('定位精度0.2mm。',c)).toEqual([]);
+  c.lockedFacts=[fact('performance.p95ErrorMm',.3,'mm','P95')];
+  expect(errors('P95理论误差0.3mm。',c)).toEqual([]);
+ });
+ it('validates engineering optics and original product tables against their own scopes',()=>{
+  const c=engineering();c.lockedFacts=[fact('engineering.opticsSource','report')];
+  c.engineering!.deployment!.opticalConfigurations=[{model:'K18',variant:'K18_8mm',lens:{focalLengthMm:8},hfovDeg:70,vfovDeg:55,maxWorkingDistanceM:47,cameraIds:['camera-1'],sourceRef:engineeringSource}];
+  const refs=[source('K18视场角52°×48°，镜头焦距12mm，追踪距离30m。',{label:'K18 通用产品规格'})];
+  const optics:DocumentBlock={id:'optics',type:'table',title:'工程报告仿真光学配置',columns:['报告型号','镜头焦距','仿真水平视场角','仿真垂直视场角','仿真最大距离'],rows:[['K18_8mm','8mm','70°','55°','47m']],sourceRefs:[engineeringSource],generated:true};
+  const products:DocumentBlock={id:'products',type:'table',title:'权威产品参数',columns:['产品型号','参数','规格'],rows:[['K18','视场角','52°×48°'],['K18','镜头焦距','12mm'],['K18','追踪距离','30m']],sourceRefs:refs,generated:true};
+  expect(validateSections([section([optics,products])],c)).toEqual([]);
+  optics.rows[0][4]='30m';products.rows[2][2]='47m';
+  expect(validateSections([section([optics,products])],c).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+ });
  it.each([
   ['帧率','200fps','100fps'],
   ['FOV','90°','60°'],

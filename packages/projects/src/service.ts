@@ -9,6 +9,8 @@ import { chunkDocument, extractiveSummary } from '../../ingestion/src/chunking.j
 import { indexText, queryText } from '../../knowledge/src/search.js';
 import { normalizedContentHash } from '../../deduplication/src/detector.js';
 import { SceneLabReportAdapter } from './scenelab.js';
+import { StructuredService } from '../../structured/src/service.js';
+import { engineeringOpticsConflicts } from './optics.js';
 import { buildRequirementRequests, extractRequirementsAI, parseRequirements, requirementEntries, requirementQuestions, stableId, type RequirementSource, type RequirementExtractionOptions } from './requirements.js';
 import type { ContextPatch, EngineeringData, LockedFact, Project, ProjectAsset, ProjectConflict, ProjectContext, ProjectInput, ProjectRequirements, SourceReference } from './types.js';
 
@@ -81,8 +83,18 @@ export class ProjectService {
  async getContext(id:string):Promise<ProjectContext>{const project=await this.row(id);const row=(await this.db.query('SELECT context,confirmed_at FROM project_context_snapshots WHERE project_id=$1 AND revision=$2',[id,project.context_revision]))[0];if(!row)throw new HttpError(409,'项目上下文尚未生成');return {...row.context,confirmed:project.confirmed_revision===project.context_revision&&row.context.inputRevision===project.input_revision,confirmedAt:row.confirmed_at?date(row.confirmed_at):undefined};}
 
  private async sources(id:string):Promise<RequirementSource[]>{const rows=await this.db.query("SELECT id,document_id,parsed_document FROM project_inputs WHERE project_id=$1 AND status='ready' AND kind IN ('document','text') ORDER BY created_at,id",[id]);const result=[];for(const row of rows){const chunks=await this.db.query('SELECT c.id,c.text FROM knowledge_chunks c JOIN documents d ON d.id=c.document_id WHERE d.id=$1 AND d.project_id=$2 AND d.scope=\'project\' AND c.version_id=d.active_version_id ORDER BY c.chunk_order',[row.document_id,id]);result.push({id:row.id,text:row.parsed_document?.plainText||'',chunks:chunks as {id:string;text:string}[]});}return result;}
+ private async legacyEngineering(id:string){
+  const rows=await this.db.query("SELECT id,filename,object_key,engineering_data,warnings FROM project_inputs WHERE project_id=$1 AND kind='engineering' AND status='ready' ORDER BY created_at,id",[id]);
+  const upgrades=[];
+  for(const row of rows){if(Number(row.engineering_data?.metadata?.adapterVersion)>=2)continue;
+   const parsed=await new SceneLabReportAdapter().parse(await this.knowledge.storage.get(row.object_key),id,row.id,row.filename);
+   // Existing assets are immutable references used by older contexts, documents and cover logos.
+   const assets=await this.db.query('SELECT * FROM project_assets WHERE project_id=$1 AND input_id=$2 ORDER BY id',[id,row.id]);parsed.engineering.assets=assets.map(asset=>this.assetRecord(asset));
+   upgrades.push({id:row.id,previous:row.engineering_data,engineering:parsed.engineering,warnings:[...new Set([...(row.warnings||[]),...parsed.warnings])]});
+  }return upgrades;
+ }
  async rebuildContext(id:string,options:{useAI?:boolean}&RequirementExtractionOptions={}):Promise<ProjectContext> {
-  const project=await this.row(id),sources=await this.sources(id);let requirements=parseRequirements(sources);
+  const project=await this.row(id),sources=await this.sources(id),upgrades=await this.legacyEngineering(id);let requirements=parseRequirements(sources);
   if(options.useAI){if(!sources.length)throw new HttpError(400,'请先导入客户需求资料');const config=await this.knowledge.settings.config();if(!config||!this.providerFactory)throw new HttpError(400,'请先配置模型');
    const model=options.model||'kimi-k3';let host='';try{const url=new URL(config.baseUrl);if(url.protocol==='https:')host=url.hostname;}catch{/* rejected below */}
    if(host!=='api.moonshot.cn'||!['kimi-k3','kimi-k2.6'].includes(model))throw new HttpError(400,'项目需求提取当前支持 Moonshot.cn 的 kimi-k3、kimi-k2.6');
@@ -95,6 +107,7 @@ export class ProjectService {
   }
   return this.db.transaction(async tx=>{
    const current=await this.row(id,tx,true);if(current.context_revision!==project.context_revision||current.input_revision!==project.input_revision)throw new HttpError(409,'项目资料已变化，请重新提取');
+   for(const upgrade of upgrades){const updated=await tx.query('UPDATE project_inputs SET engineering_data=$3::jsonb,warnings=$4::jsonb WHERE id=$1 AND project_id=$2 AND engineering_data=$5::jsonb RETURNING id',[upgrade.id,id,JSON.stringify(upgrade.engineering),JSON.stringify(upgrade.warnings),JSON.stringify(upgrade.previous)]);if(!updated.length)throw new HttpError(409,'工程报告适配结果已更新，请重新提取');await this.audit(tx,id,'engineering_adapter_upgraded',{inputId:upgrade.id,adapterVersion:upgrade.previous?.metadata?.adapterVersion??1},{inputId:upgrade.id,adapterVersion:2});}
    const previous=(await tx.query('SELECT context FROM project_context_snapshots WHERE project_id=$1 AND revision=$2',[id,current.context_revision]))[0]?.context as ProjectContext|undefined;
    // Explicit user corrections survive another import or extraction.
    if(previous?.reviewedInputIds?.length){
@@ -114,16 +127,17 @@ export class ProjectService {
    const userFacts=await tx.query("SELECT * FROM project_facts WHERE project_id=$1 AND source_type='user'",[id]);context.lockedFacts=userFacts.map(row=>({id:row.id,key:row.key,label:row.label,value:row.value,unit:row.unit||undefined,sourceType:'user',sourceRef:row.source_ref,locked:true}));
    const selectedProducts=context.lockedFacts.find(fact=>fact.key==='products');if(selectedProducts&&Array.isArray(selectedProducts.value))context.products=selectedProducts.value as string[];
    const userSummary=context.lockedFacts.find(fact=>fact.key==='project.summary');if(userSummary&&typeof userSummary.value==='string')context.summary=userSummary.value;
-   this.derive(context);return this.persistContext(tx,current,context,'context_rebuilt');
+   await this.derive(context,tx);return this.persistContext(tx,current,context,'context_rebuilt');
   });
  }
 
- private derive(context:ProjectContext) {
+ private async derive(context:ProjectContext,tx:Connection) {
   const user=context.lockedFacts.filter(fact=>fact.sourceType==='user');const facts:LockedFact[]=[];const conflicts:ProjectConflict[]=[];
   const add=(key:string,label:string,value:unknown,unit:string|undefined,sourceType:LockedFact['sourceType'],sourceRef:SourceReference)=>{if(value!==undefined&&value!==null)facts.push({id:stableId(context.projectId,sourceType,key),key,label,value,unit,sourceType,sourceRef,locked:true});};
   for(const [category,item] of requirementEntries(context.requirements))add(`requirement.${category}.${item.id}`,category,item.value,undefined,'customer_requirement',{type:item.sourceInputId==='user'?'user':'project_input',id:item.sourceInputId,label:category,evidence:item.evidence});
   const engineering=context.engineering;context.capabilities=[];
   if(engineering){const ref=engineering.sourceRef;add('scene.boundaryM','场地尺寸',engineering.scene?.boundaryM,'m','engineering_data',ref);add('deployment.equipmentCount','相机数量',engineering.deployment?.equipmentCount,'台','engineering_data',ref);add('deployment.models','相机型号与数量',engineering.deployment?.models,undefined,'engineering_data',ref);
+   if(engineering.deployment?.opticalConfigurations?.length)add('engineering.opticalConfigurations','原报告工程仿真光学配置',engineering.deployment.opticalConfigurations,undefined,'engineering_data',ref);
    const labels:Record<string,string>={coverageGe1:'至少1视点覆盖率',coverageGe2:'至少2视点覆盖率',coverageGe3:'至少3视点覆盖率',coverageGe4:'至少4视点覆盖率',coverageGe5:'至少5视点覆盖率',averageViewCount:'平均可见视点数',meanErrorMm:'平均理论定位误差',p90ErrorMm:'P90理论定位误差',p95ErrorMm:'P95理论定位误差',under03Mm:'理论误差低于0.3mm比例',under05Mm:'理论误差低于0.5mm比例'};
    for(const [key,value] of Object.entries(engineering.performance||{})){const unit=key.startsWith('coverage')||key.startsWith('under')?'%':key.endsWith('Mm')?'mm':undefined;add(`performance.${key}`,labels[key]||key,value,unit,'engineering_data',ref);if(value!==null&&value!==undefined)context.capabilities.push({key,label:labels[key]||key,value,unit,sourceRef:ref});}
    const accuracy=context.requirements.performance.accuracy;const actual=engineering.performance?.p95ErrorMm;
@@ -132,6 +146,11 @@ export class ProjectService {
   // User facts take precedence only for the same fact key; customer targets remain separate from capabilities.
   if(engineering)for(const fact of user){const [group,key]=fact.key.split('.');const original=(engineering as any)[group]?.[key];if(original!==undefined&&JSON.stringify(original)!==JSON.stringify(fact.value))conflicts.push({id:stableId(context.projectId,'engineering-override',fact.key),key:fact.key,severity:'warning',message:`用户确认的${fact.label}与原工程报告不同。正文采用用户确认值，工程图片仍来自原报告，请核对或更新工程报告。`,actual:original,sourceRefs:[fact.sourceRef,engineering.sourceRef],status:'open'});}
   context.lockedFacts=[...facts.filter(fact=>!user.some(prior=>prior.key===fact.key)),...user];context.conflicts=conflicts;
+  if(engineering?.deployment?.opticalConfigurations?.length){
+   // Reuse exact, active authoritative product retrieval on this transaction connection.
+   const structured=new StructuredService({...this.db,query:tx.query.bind(tx)});
+   context.conflicts.push(...engineeringOpticsConflicts(context,await structured.productFacts(context.products)));
+  }
   context.unresolved=context.requirements.unresolved.filter(question=>!question.resolved);
  }
  private async persistContext(tx:Connection,project:any,context:ProjectContext,action:string) {
@@ -157,7 +176,7 @@ export class ProjectService {
    if(input.requirements){context.reviewedInputIds=(await tx.query('SELECT id FROM project_inputs WHERE project_id=$1',[id])).map(r=>r.id);const old=new Map(requirementEntries(context.requirements).map(([,item])=>[item.id,item]));context.requirements=input.requirements;for(const [category,item] of requirementEntries(context.requirements)){const original=old.get(item.id);if(!original||JSON.stringify(original.value)!==JSON.stringify(item.value)){item.id=stableId(id,'user-requirement',category,JSON.stringify(item.value));item.sourceInputId='user';delete item.sourceChunkId;item.evidence=`人工确认：${typeof item.value==='string'?item.value:JSON.stringify(item.value)}`;}else{item.sourceInputId=original.sourceInputId;item.sourceChunkId=original.sourceChunkId;item.evidence=original.evidence;}item.confirmedByUser=true;item.confidence=1;}}
    for(const item of input.facts||[]) {const fact:LockedFact={...item,id:stableId(id,'user',item.key),sourceType:'user',sourceRef:{type:'user',id,label:'用户确认项目事实',evidence:`${item.label}：${JSON.stringify(item.value)}`},locked:true};context.lockedFacts=context.lockedFacts.filter(old=>!(old.key===item.key&&old.sourceType==='user'));context.lockedFacts.push(fact);}
    if(input.products){context.products=[...new Set(input.products)];context.lockedFacts=context.lockedFacts.filter(fact=>!(fact.key==='products'&&fact.sourceType==='user'));context.lockedFacts.push({id:stableId(id,'user','products'),key:'products',label:'人工选择产品型号',value:context.products,sourceType:'user',sourceRef:{type:'user',id,label:'用户选择型号',evidence:context.products.join('、')},locked:true});}
-   const previousQuestions=new Map(context.requirements.unresolved.map(q=>[q.id,q]));context.requirements.unresolved=requirementQuestions(context.requirements).map(q=>({...q,resolved:previousQuestions.get(q.id)?.resolved||input.resolvedQuestionIds?.includes(q.id)||false}));this.derive(context);return this.persistContext(tx,project,context,'context_edited');});
+   const previousQuestions=new Map(context.requirements.unresolved.map(q=>[q.id,q]));context.requirements.unresolved=requirementQuestions(context.requirements).map(q=>({...q,resolved:previousQuestions.get(q.id)?.resolved||input.resolvedQuestionIds?.includes(q.id)||false}));await this.derive(context,tx);return this.persistContext(tx,project,context,'context_edited');});
  }
  async confirmContext(id:string,revision:number):Promise<ProjectContext> {
   await this.db.transaction(async tx=>{const project=await this.row(id,tx,true);if(project.status==='archived')throw new HttpError(409,'项目已归档');if(project.context_revision!==revision)throw new HttpError(409,'项目资料已更新，请复核最新版本');const row=(await tx.query('SELECT context FROM project_context_snapshots WHERE project_id=$1 AND revision=$2 FOR UPDATE',[id,revision]))[0];if(!row)throw new HttpError(409,'项目上下文不存在');const context=row.context as ProjectContext;

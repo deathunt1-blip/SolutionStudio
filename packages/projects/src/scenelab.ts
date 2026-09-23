@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import { randomUUID } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { HttpError } from '../../knowledge/src/service.js';
-import type { EngineeringData, ProjectAsset, SourceReference } from './types.js';
+import type { EngineeringData, EngineeringOpticalConfiguration, ProjectAsset, SourceReference } from './types.js';
 
 const invalid=(message:string):never=>{throw new HttpError(400,`SceneLab 报告包无效：${message}`);};
 const crcTable=Uint32Array.from({length:256},(_,value)=>{for(let bit=0;bit<8;bit++)value=value&1?0xedb88320^(value>>>1):value>>>1;return value>>>0;});
@@ -55,15 +55,25 @@ export class SceneLabReportAdapter {
   const boundary=tuple(project.boundary_m,'场地'),analysisBoundary=tuple(analysis.settings?.boundary_m,'分析场地');if(JSON.stringify(boundary)!==JSON.stringify(analysisBoundary))invalid('项目与分析场地尺寸不一致');
   if(project.units?.position!=='m'||project.units?.accuracy!=='mm')invalid('工程单位必须为 m / mm');
   if(!Array.isArray(project.cameras)||project.cameras.length>10000)invalid('相机列表无效');
-  const models=new Map<string,number>();const ids=new Set<string>();let equipmentCount=0;
+  const sourceRef:SourceReference={type:'engineering_data',id:inputId,label:filename,evidence:`方案 ${project.scheme_name||''} R${project.scheme_revision}；原始工程分析`};
+  const models=new Map<string,number>(),optics=new Map<string,EngineeringOpticalConfiguration>();const ids=new Set<string>();let equipmentCount=0;
+  const optionalNumber=(value:unknown,label:string,max=Infinity)=>value===undefined?undefined:value===null?null:number(value,label,0,max);
   for(const camera of project.cameras){if(!camera||typeof camera.id!=='string'||ids.has(camera.id)||typeof camera.enabled!=='boolean')invalid('相机标识或启用状态无效');ids.add(camera.id);if(!camera.enabled)continue;
-   const name=camera.camera_model?.catalog?.camera?.model||camera.camera_model?.model_name||camera.camera_model?.display_name;if(typeof name!=='string'||!name.trim()||name.length>200)invalid('启用相机缺少型号');models.set(name,(models.get(name)||0)+1);equipmentCount++;}
+   const model=camera.camera_model,name=model?.catalog?.camera?.model||model?.model_name||model?.display_name;if(typeof name!=='string'||!name.trim()||name.length>200)invalid('启用相机缺少型号');models.set(name,(models.get(name)||0)+1);equipmentCount++;
+   const variant=model.catalog?.optical?.profile_name??model.variant,rangeMode=model.range_mode;
+   if(variant!==undefined&&(typeof variant!=='string'||variant.length>200)||rangeMode!==undefined&&(typeof rangeMode!=='string'||rangeMode.length>100))invalid('光学配置名称无效');
+   const focalLengthMm=optionalNumber(model.focal_length_mm,'仿真镜头焦距'),apertureF=optionalNumber(model.catalog?.optical?.aperture_f,'镜头光圈');
+   // Top-level camera_model values are the actual simulation inputs; catalog defaults may differ.
+   const configuration={model:name,variant,lens:focalLengthMm!==undefined||apertureF!==undefined?{focalLengthMm,apertureF}:undefined,hfovDeg:optionalNumber(model.hfov_deg,'仿真水平视场角',360),vfovDeg:optionalNumber(model.vfov_deg,'仿真垂直视场角',360),maxWorkingDistanceM:optionalNumber(model.max_working_distance_m,'仿真最大工作距离'),rangeMode};
+   if(![focalLengthMm,apertureF,configuration.hfovDeg,configuration.vfovDeg,configuration.maxWorkingDistanceM].some(value=>typeof value==='number'))continue;
+   const key=JSON.stringify(configuration),existing=optics.get(key);
+   if(existing)existing.cameraIds.push(camera.id);else optics.set(key,{...configuration,cameraIds:[camera.id],sourceRef:{...sourceRef,label:`${name}${variant?` · ${variant}`:''} 工程仿真光学配置`,evidence:`原报告仿真配置：${JSON.stringify(configuration)}。这些值为工程分析输入，不代表实测产品能力。`}});
+  }
   const coverage=analysis.coverage_percent,accuracy=analysis.accuracy_mm,threshold=analysis.threshold_percent;if(!coverage||!accuracy||!threshold)invalid('缺少覆盖或精度分析');
   const nullable=(value:unknown,label:string)=>value===null?null:number(value,label);
-  const sourceRef:SourceReference={type:'engineering_data',id:inputId,label:filename,evidence:`方案 ${project.scheme_name||''} R${project.scheme_revision}；原始工程分析`};
-  const result:EngineeringData={sourceType:'scenelab',scene:{boundaryM:boundary},deployment:{equipmentCount,models:[...models].map(([name,count])=>({name,count}))},
+  const result:EngineeringData={sourceType:'scenelab',scene:{boundaryM:boundary},deployment:{equipmentCount,models:[...models].map(([name,count])=>({name,count})),opticalConfigurations:[...optics.values()]},
    performance:{coverageGe1:number(coverage.ge1,'覆盖率',0,100),coverageGe2:number(coverage.ge2,'覆盖率',0,100),coverageGe3:number(coverage.ge3,'覆盖率',0,100),coverageGe4:number(coverage.ge4,'覆盖率',0,100),coverageGe5:number(coverage.ge5,'覆盖率',0,100),averageViewCount:number(analysis.average_view_count,'平均视点数'),meanErrorMm:nullable(accuracy.mean,'平均误差'),p90ErrorMm:nullable(accuracy.p90,'P90误差'),p95ErrorMm:nullable(accuracy.p95,'P95误差'),under03Mm:number(threshold.under_0_3mm,'误差阈值比例',0,100),under05Mm:number(threshold.under_0_5mm,'误差阈值比例',0,100)},
-   assets:[],sourceRef,metadata:{schemeId:project.scheme_id,schemeRevision:project.scheme_revision,generatedAt:analysis.generated_at,accuracyMetric:analysis.statistics?.accuracy_metric,coverageUnit:analysis.statistics?.coverage_unit}};
+   assets:[],sourceRef,metadata:{adapterVersion:2,schemeId:project.scheme_id,schemeRevision:project.scheme_revision,generatedAt:analysis.generated_at,accuracyMetric:analysis.statistics?.accuracy_metric,coverageUnit:analysis.statistics?.coverage_unit}};
   if(!Array.isArray(manifest.images)||manifest.images.length>64)invalid('图片清单无效');
   const assets:{asset:ProjectAsset;bytes:Uint8Array}[]=[];const used=new Set<string>();
   const addImage=async(entry:any,cameraView=false)=>{

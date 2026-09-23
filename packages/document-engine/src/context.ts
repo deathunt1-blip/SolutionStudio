@@ -25,6 +25,8 @@ export const generationSystem=`你是负责交付中文技术方案的技术工�
 依据来源标题、类型和authority判断适用范围。当前项目资料用于描述客户需求和项目条件。authoritative产品资料也必须匹配selectedProducts中的准确型号，不能挪用其他型号的参数。reference历史方案可以支持通用设计思路，其数字、配置、客户名称、项目专属指标不能移植为当前项目能力；正文不得带入其他客户、机构、项目的名称、招投标经历、采购结果或无关历史对比，只抽取与本章有关且适用的通用方法。标准规范中的“应/宜”条款只是设计参考，不等于具体产品已有该能力或本项目已经通过验收。styleExamples仅供表达参考，不可作为事实或技术能力依据。
 缺失型号、接口、性能、交付范围或验收条件时，在涉及它的设计环节明确标为待确认，并说明对实施的影响。可以把资料支持的通用实施方法写成设计建议，明确它是建议或后续确认事项，不能改写成已配置、已支持或已完成。未选型的同步盒、计算机等只能作为待确认的功能角色；不能因为部分参数未知，就把整个章节变成待确认清单，仍应说明已有依据支持的设计流程、依赖关系和边界。
 工程计算由程序和工程报告负责，禁止自行计算或估计空间对角线、工作距离、角度精度、覆盖率差值、采样点数量等新数值。也不要借用其他配置的数值算例解释当前项目，或将参考文章中的理想条件写成当前报告已采用的假设。所有产品参数以structuredFacts为准，参考文章或规格不同口径与它冲突时仅说明需要核对，不替换权威值。
+只写证据实际支持的工程结论：平均可见视点数不能证明每个位置、任意时刻、遮挡或相机失效后仍然稳定；标称追踪距离不证明覆盖余量或布局不受限制。未提供的相机端与计算机端处理分工、网络载荷形式、同步触发或时钟实现均需核对产品协议，不能把常见架构写成当前型号已经采用的实现。软件尚未选定时，参考软件的功能只能作为待核对的选型需求。
+simulationOpticalConfigurations是报告实际采用的镜头、视场角与距离等仿真输入，structuredFacts是通用产品参数；同一基础型号可以存在不同镜头配置，两种口径不得拼接。engineeringOpticsSource为report时，本项目工程分析以用户选择的报告光学配置为准，通用产品表保留其原始参数仅供选型核对，不能用通用参数证明报告的覆盖或精度。明确写“报告仿真视场角/仿真最大距离/镜头焦距”，不能称其为实测产品能力。未提供相机坐标与朝向时，不得从图片标题或历史方案推断本项目采用环形、上下分层或具体安装高度。
 不要写来源审计、去重、内部校验、token等工作台过程说明，不用宣传套话，不重复章节标题。表格与工程图由程序插入，不编造表格、图片或编号。以自然段展开分析，确有并列环节或步骤时用列表。
 仅返回JSON：{content:[{type:"paragraph",text:"..."}或{type:"list",items:["..."]}],used_fact_ids:["锁定事实或结构化参数id"],used_knowledge_refs:["知识片段或项目输入chunk id"],used_asset_refs:[],claims:[{text:"涉及数值/型号/性能/接口的完整句子",factIds:["..."],sourceIds:["..."],kind:"requirement|capability|engineering"}]}。
 所有数值和技术能力断言必须列入claims并且对应具体依据。used_fact_ids和claims.factIds只可取lockedFacts[].id或structuredFacts[].id，不可填key、sourceId、名称或工程文件名；used_knowledge_refs与claims.sourceIds只能取上下文提供的具体来源id，找不到则留空，不得编造。claims中的句子应与正文表达一致，既不把要求标为能力，也不把理论结果标为实测。`;
@@ -72,8 +74,9 @@ export async function buildSectionContext(section:DocumentSection,context:Projec
   customerRequirements:required.map(r=>({id:r.id,key:r.key,value:r.value,evidence:r.evidence,sourceId:r.sourceChunkId??r.sourceInputId})),
   lockedFacts:context.lockedFacts.map(f=>({id:f.id,key:f.key,label:f.label,value:f.value,unit:f.unit,sourceType:f.sourceType,sourceId:f.sourceRef.id})),
   engineeringFacts:section.requiredContext.includes('engineering')?{scene:engineering?.scene,deployment:engineering?.deployment,performance:engineering?.performance}:undefined,
+  simulationOpticalConfigurations:engineering?.deployment?.opticalConfigurations??[],engineeringOpticsSource:context.lockedFacts.find(f=>f.key==='engineering.opticsSource')?.value??'unconfirmed',
   structuredFacts:facts.map(f=>({id:f.id,productKey:f.productKey,field:f.field,value:f.value,unit:f.unit})),
-  conflicts:context.conflicts.filter(c=>c.status==='open').map(c=>c.message),unresolved:context.unresolved.filter(q=>!q.resolved).map(q=>q.question),
+  conflicts:context.conflicts.map(c=>({message:c.message,status:c.status})),unresolved:context.unresolved.filter(q=>!q.resolved).map(q=>q.question),
   assets:context.assets.filter(a=>section.assetRoles?.includes(a.role)).map(a=>({id:a.id,role:a.role,caption:a.caption})),
   knowledgeChunks:[] as {id:string;title:string;sourceType:SourceRef['type'];authority?:string;scope:'current_project'|'library';use:'customer_requirement'|'design_reference'|'product_evidence';text:string}[],styleExamples:[] as {title:string;text:string}[],previousText:extra.previous??'',
  };

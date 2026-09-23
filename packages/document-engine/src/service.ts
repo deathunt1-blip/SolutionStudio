@@ -160,9 +160,9 @@ export class DocumentEngine {
  private async process(job:any){
   const context=await this.snapshot(job.document_id),{settings,config}=await this.config({...job.config,limitsEnabled:job.config.limitsEnabled!==false}),provider=this.providerFactory({...settings,...config,requestTimeoutMs:modelProfile(config.model).requestTimeoutMs});let exhausted=false;
   // Independent chapters share an immutable snapshot. Bound provider concurrency while reserving each call atomically.
-  for(let offset=0;offset<job.targets.length&&!this.stopping&&!exhausted;offset+=3){
-   await Promise.all(job.targets.slice(offset,offset+3).map(async(target:any)=>{
-   if(this.stopping||exhausted)return;
+  let cursor=0;
+  const worker=async()=>{while(!this.stopping&&!exhausted){
+   const target=job.targets[cursor++];if(!target)return;
    const doc=await this.get(job.document_id),section=doc.sections.find(s=>s.id===target.id);
    try{
     if(!section||section.revision!==target.revision||doc.contextStale)throw new Error('章节或项目事实已更改，请按最新版本重试');
@@ -180,8 +180,8 @@ export class DocumentEngine {
     const next:DocumentSection={...section,...result,blocks:[...result.blocks,...fixed],sourceRefs:[...new Map(references.map(r=>[r.type+':'+r.id,r])).values()],assetRefs:[...new Set([...result.assetRefs,...fixed.filter(b=>b.type==='asset').map(b=>b.assetId)])],status:'generated',edited:false,error:undefined,contextTokens:sc.tokens};
     await this.db.transaction(async tx=>{const row=await this.row(job.document_id,tx),current=(await tx.query('SELECT revision FROM document_sections WHERE id=$1 FOR UPDATE',[section.id]))[0];if(row.current_context_revision!==context.revision||row.current_input_revision!==context.inputRevision||current.revision!==target.revision)throw new Error('生成期间事实或章节已更新，结果未覆盖原内容');await this.persistSection(tx,next);await tx.query('UPDATE generated_documents SET revision=revision+1,updated_at=now() WHERE id=$1',[doc.id]);await tx.query('UPDATE generation_jobs SET processed=processed+1,updated_at=now() WHERE id=$1',[job.id]);});
    }catch(error){const message=this.knowledge.settings.redact(error instanceof Error?error.message:'本章生成失败');await this.db.query("UPDATE document_sections SET status='failed',error=$2 WHERE id=$1",[target.id,message]);await this.db.query('UPDATE generation_jobs SET failed=failed+1,errors=errors||$2::jsonb,updated_at=now() WHERE id=$1',[job.id,json([{sectionId:target.id,message}])]);}
-   }));
-  }
+  }};
+  await Promise.all(Array.from({length:Math.min(3,job.targets.length)},()=>worker()));
   const row=(await this.db.query('SELECT * FROM generation_jobs WHERE id=$1',[job.id]))[0];const status=exhausted?'budget_exhausted':this.stopping?'interrupted':row.failed?(row.processed?'partially_failed':'failed'):'completed';
   await this.db.query('UPDATE generation_jobs SET status=$2,updated_at=now() WHERE id=$1',[job.id,status]);
   await this.db.query("UPDATE document_sections SET status='failed',error=$2 WHERE document_id=$1 AND status IN ('queued','generating')",[job.document_id,exhausted?'预算预留已达上限，已保留完成章节，请调整预算后重试':'任务已中断，请重试未完成章节']);

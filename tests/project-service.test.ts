@@ -9,6 +9,9 @@ import { openDatabase, type Database } from '../packages/knowledge/src/database.
 import { KnowledgeService } from '../packages/knowledge/src/service.js';
 import { ProjectService } from '../packages/projects/src/service.js';
 import { SceneLabReportAdapter } from '../packages/projects/src/scenelab.js';
+import { StructuredService, inspect } from '../packages/structured/src/service.js';
+import { DocumentEngine } from '../packages/document-engine/src/service.js';
+import { engineeringOpticsConflicts } from '../packages/projects/src/optics.js';
 import { buildRequirementRequest, buildRequirementRequests, extractRequirementsAI, parseRequirements, REQUIREMENT_CONTEXT_BYTES } from '../packages/projects/src/requirements.js';
 import { modelProfile } from '../packages/llm/src/models.js';
 import { registerProjectRoutes } from '../apps/server/src/project-routes.js';
@@ -32,10 +35,49 @@ describe('project sources, contexts and SceneLab boundary',()=>{
 
  test('actual SceneLab schema maps enabled cameras, percentages, null precision and image roles without flattening diagnostics',async()=>{
   const parsed=await new SceneLabReportAdapter().parse(await report(), 'project-a','input-a','space.scenelab-report');
-  expect(parsed.engineering.scene?.boundaryM).toEqual([12,10,5]);expect(parsed.engineering.deployment).toEqual({equipmentCount:2,models:[{name:'K18',count:2}]});
+  expect(parsed.engineering.scene?.boundaryM).toEqual([12,10,5]);expect(parsed.engineering.deployment).toEqual({equipmentCount:2,models:[{name:'K18',count:2}],opticalConfigurations:[]});expect(parsed.engineering.metadata?.adapterVersion).toBe(2);
   expect(parsed.engineering.performance?.p95ErrorMm).toBe(.4924875942142447);expect(parsed.engineering.performance?.coverageGe2).toBe(99.5);
   expect(parsed.assets.map(a=>a.asset.role)).toContain('accuracy_front');expect(parsed.assets).toHaveLength(6);expect(JSON.stringify(parsed.engineering)).not.toContain('Never publish');
   const absent=await new SceneLabReportAdapter().parse(await report(({analysis})=>{analysis.accuracy_mm={mean:null,p90:null,p95:null};}), 'a','b','null.scenelab-report');expect(absent.engineering.performance?.p95ErrorMm).toBeNull();
+ });
+
+ test('optical groups preserve actual simulation values, variants and lenses without substituting catalog defaults',async()=>{
+  const bytes=await report(({project})=>{for(const camera of project.cameras.filter((camera:any)=>camera.enabled))camera.camera_model={model_name:'K18 · Standard',hfov_deg:72,vfov_deg:67,focal_length_mm:8,max_working_distance_m:47,range_mode:'passive',catalog:{camera:{model:'K18'},optical:{profile_name:'Standard',hfov_deg:52,vfov_deg:48,focal_length_mm:12,aperture_f:1.4,passive_range_m:30}}};project.cameras.push({...project.cameras[0],id:'narrow',camera_model:{...project.cameras[0].camera_model,hfov_deg:52,vfov_deg:48,focal_length_mm:12,max_working_distance_m:null,catalog:{camera:{model:'K18'},optical:{profile_name:'Narrow'}}}});});
+  const {engineering}=await new SceneLabReportAdapter().parse(bytes,'optical-project','optical-input','optical-fixture.scenelab-report');
+  expect(engineering.deployment?.models).toEqual([{name:'K18',count:3}]);expect(engineering.deployment?.opticalConfigurations).toHaveLength(2);
+  expect(engineering.deployment?.opticalConfigurations?.[0]).toMatchObject({model:'K18',variant:'Standard',lens:{focalLengthMm:8,apertureF:1.4},hfovDeg:72,vfovDeg:67,maxWorkingDistanceM:47,rangeMode:'passive',cameraIds:['a','b'],sourceRef:{type:'engineering_data',id:'optical-input'}});
+  expect(engineering.deployment?.opticalConfigurations?.[1]).toMatchObject({variant:'Narrow',lens:{focalLengthMm:12},hfovDeg:52,vfovDeg:48,maxWorkingDistanceM:null,cameraIds:['narrow']});
+ });
+
+ test('legacy optical adaptation preserves originals and immutable snapshots; explicit report selection retains both sources',async()=>{
+  const structured=new StructuredService(db),raw={remoteId:'optical-spec-fixture',title:'合成相机规格',sourceUrl:'https://example.test/optics',rows:[['型号','产品规格或简称','备注'],['K18','4512x4096@172fps（52°×48°）/Gigabit Ethernet/RJ45/PoE++','追踪距离30m'],['K1','FOV72°×67°','追踪距离47m']]};
+  const dataset=await structured.save('synthetic-optics',raw),preview=inspect(raw);await structured.confirmMapping(dataset.id,{headerRow:preview.headerRow,fields:preview.fields.map(field=>({...field,canonicalName:field.sourceHeader})),productKey:'col_1',isProductTable:true,authority:'authoritative'});
+  const packageBytes=await report(({project})=>{for(const camera of project.cameras.filter((camera:any)=>camera.enabled))camera.camera_model={...camera.camera_model,hfov_deg:72,vfov_deg:67,focal_length_mm:8,max_working_distance_m:47,range_mode:'passive',catalog:{camera:{model:'K18'},optical:{profile_name:'Standard'}}};});
+  const project=await projects.create({name:'光学配置回归'}),imported=await projects.addInput(project.id,{filename:'optical-fixture.scenelab-report',bytes:packageBytes});
+  expect(imported.context.conflicts).toHaveLength(2);expect(imported.context.conflicts.every(conflict=>conflict.status==='open'&&conflict.severity==='error')).toBe(true);
+  const distanceFact=(await structured.productFacts(['K18'])).find(fact=>fact.field==='备注')!;
+  expect(engineeringOpticsConflicts(imported.context,[{...distanceFact,field:'描述',value:'追踪距离30m'}])).toMatchObject([{status:'open',severity:'error',actual:{authoritative:{field:'描述',value:'追踪距离30m'}}}]);
+  expect(engineeringOpticsConflicts(imported.context,[{...distanceFact,field:'描述',value:'样例中包含30m；4512x4096@172fps（52°×48°）'}])).toEqual([]);
+  expect(imported.context.conflicts.every(conflict=>conflict.sourceRefs.some(ref=>ref.type==='engineering_data')&&conflict.sourceRefs.some(ref=>ref.type==='structured_fact'))).toBe(true);
+  expect(imported.context.capabilities.some(capability=>/hfov|vfov|workingdistance/i.test(capability.key))).toBe(false);
+  const legacy=structuredClone(imported.context);delete legacy.engineering!.metadata!.adapterVersion;delete legacy.engineering!.deployment!.opticalConfigurations;legacy.lockedFacts=legacy.lockedFacts.filter(fact=>fact.key!=='engineering.opticalConfigurations');legacy.conflicts=[];
+  await db.query('UPDATE project_inputs SET engineering_data=$2::jsonb WHERE id=$1',[imported.input.id,JSON.stringify(legacy.engineering)]);await db.query('UPDATE project_context_snapshots SET context=$3::jsonb WHERE project_id=$1 AND revision=$2',[project.id,legacy.revision,JSON.stringify(legacy)]);
+  const confirmed=await projects.confirmContext(project.id,legacy.revision),engine=new DocumentEngine(db,knowledge,projects,structured,()=>({generate:async()=>{throw new Error('No generation required');}}));await engine.start();
+  const originalGet=knowledge.storage.get;let packageReads=0;
+  try{
+   const document=await engine.create(project.id),savedSnapshot=(await db.query('SELECT context_snapshot FROM generated_documents WHERE id=$1',[document.id]))[0].context_snapshot,oldContext=(await db.query('SELECT context FROM project_context_snapshots WHERE project_id=$1 AND revision=$2',[project.id,confirmed.revision]))[0].context;
+   const assetsBefore=await db.query('SELECT * FROM project_assets WHERE input_id=$1 ORDER BY id',[imported.input.id]),inputBefore=(await db.query('SELECT object_key,content_hash FROM project_inputs WHERE id=$1',[imported.input.id]))[0],objectKeysBefore=[...objects.keys()].sort(),factsBefore=await structured.productFacts(['K18']);
+   knowledge.storage.get=async key=>{if(key===inputBefore.object_key)packageReads++;return originalGet(key);};
+   const upgraded=await projects.rebuildContext(project.id);expect(upgraded.revision).toBe(confirmed.revision+1);expect(upgraded.confirmed).toBe(false);expect(upgraded.engineering?.metadata?.adapterVersion).toBe(2);expect(upgraded.engineering?.deployment?.opticalConfigurations?.[0]).toMatchObject({hfovDeg:72,vfovDeg:67,maxWorkingDistanceM:47,lens:{focalLengthMm:8}});
+   expect(upgraded.conflicts).toHaveLength(2);expect((await engine.get(document.id)).contextStale).toBe(true);expect((await db.query('SELECT context_snapshot FROM generated_documents WHERE id=$1',[document.id]))[0].context_snapshot).toEqual(savedSnapshot);
+   expect((await db.query('SELECT context FROM project_context_snapshots WHERE project_id=$1 AND revision=$2',[project.id,confirmed.revision]))[0].context).toEqual(oldContext);
+   expect(await db.query('SELECT * FROM project_assets WHERE input_id=$1 ORDER BY id',[imported.input.id])).toEqual(assetsBefore);expect(upgraded.assets.map(asset=>asset.id).sort()).toEqual(assetsBefore.map(asset=>asset.id).sort());
+   expect((await db.query('SELECT object_key,content_hash FROM project_inputs WHERE id=$1',[imported.input.id]))[0]).toEqual(inputBefore);expect(Buffer.from(objects.get(inputBefore.object_key)!)).toEqual(Buffer.from(packageBytes));expect([...objects.keys()].sort()).toEqual(objectKeysBefore);
+   const selected=await projects.patchContext(project.id,{revision:upgraded.revision,facts:[{key:'engineering.opticsSource',label:'工程光学配置来源',value:'report'}]});
+   expect(selected.conflicts).toHaveLength(2);expect(selected.conflicts.every(conflict=>conflict.status==='resolved'&&conflict.severity==='warning')).toBe(true);expect(selected.conflicts.every(conflict=>conflict.message.includes('报告')&&conflict.message.includes('实测'))).toBe(true);
+   expect(selected.engineering?.deployment?.opticalConfigurations).toEqual(upgraded.engineering?.deployment?.opticalConfigurations);expect(await structured.productFacts(['K18'])).toEqual(factsBefore);
+   const rebuilt=await projects.rebuildContext(project.id);expect(rebuilt.lockedFacts.find(fact=>fact.key==='engineering.opticsSource')).toMatchObject({value:'report',sourceType:'user'});expect(rebuilt.conflicts.every(conflict=>conflict.status==='resolved')).toBe(true);expect(packageReads).toBe(1);expect(await db.query("SELECT id FROM project_audit_events WHERE project_id=$1 AND action='engineering_adapter_upgraded'",[project.id])).toHaveLength(1);
+  }finally{knowledge.storage.get=originalGet;await engine.close();await structured.remove(dataset.id);}
  });
 
  test('malformed, stale, path-traversing and invalid-unit packages are rejected before imports affect engineering',async()=>{

@@ -3,6 +3,7 @@ import {buildSectionContext,DocumentRetriever,generationSystem} from '../package
 import type {DocumentSection,SourceRef} from '../packages/document-engine/src/types.js';
 import type {ProjectContext} from '../packages/projects/src/types.js';
 import type {StructuredService} from '../packages/structured/src/service.js';
+import {deterministicBlocks} from '../packages/document-engine/src/blocks.js';
 
 const section:DocumentSection={id:'section',title:'相机部署设计',level:2,order:0,generationMode:'ai',requiredContext:['engineering'],retrievalPolicy:{query:'相机 部署 安装',limit:6},status:'empty',blocks:[],sourceRefs:[],assetRefs:[],lockedFactRefs:[],claims:[],revision:1,edited:false};
 function context():ProjectContext{return {projectId:'private-project',revision:1,confirmed:true,summary:'动作捕捉系统建设',requirements:{goals:[],performance:{},interfaces:[],protocols:[],environment:[],installationConstraints:[],specialRequirements:[],acceptanceCriteria:[],unresolved:[]},lockedFacts:[{id:'count',key:'deployment.equipmentCount',label:'相机数量',value:16,unit:'台',sourceType:'engineering_data',sourceRef:{type:'engineering_data',id:'report',label:'当前部署报告'},locked:true}],products:['K18'],capabilities:[],assets:[],conflicts:[],unresolved:[]};}
@@ -64,5 +65,25 @@ describe('chapter context quality and optional economy controls',()=>{
   expect(found.retrieve).toHaveBeenCalledWith('private-project',expect.any(String),['selected']);
   expect(JSON.parse(built.prompt)).toMatchObject({mode:'rewrite',previousText:'已有正文'});
   await expect(buildSectionContext(section,context(),retriever([]).instance,structured,32000,{sourceIds:['foreign-private-source']})).rejects.toMatchObject({statusCode:422});
+ });
+ test('report optics stay separate from generic product facts in every prompt and generated parameter table',async()=>{
+  const project=context(),sourceRef={type:'engineering_data' as const,id:'report',label:'工程报告'};
+  project.engineering={sourceType:'scenelab',assets:[],sourceRef,deployment:{opticalConfigurations:[{model:'K18',variant:'K18-STD',lens:{focalLengthMm:8},hfovDeg:70,vfovDeg:65,maxWorkingDistanceM:45,cameraIds:['cam-1'],sourceRef}]}};
+  project.lockedFacts.push({id:'optics-choice',key:'engineering.opticsSource',label:'工程光学配置',value:'report',sourceType:'user',sourceRef:{type:'user',id:'user',label:'明确选择报告配置'},locked:true});
+  const productFacts=[{id:'generic-fov',productKey:'K18',field:'产品规格或简称',value:'4608x4096@170fps（50°×46°）/30m',authority:'authoritative'}];
+  const service={productFacts:async()=>productFacts} as unknown as StructuredService;
+  const built=await buildSectionContext({...section,requiredContext:['requirements'],tableKind:'products'},project,retriever([]).instance,service,40000);
+  const prompt=JSON.parse(built.prompt);expect(prompt.engineeringOpticsSource).toBe('report');expect(prompt.simulationOpticalConfigurations[0]).toMatchObject({hfovDeg:70,vfovDeg:65,maxWorkingDistanceM:45});expect(prompt.structuredFacts[0].value).toContain('50°×46°');
+  const tables=deterministicBlocks({...section,tableKind:'products'},built).filter(b=>b.type==='table');
+  expect(tables.map(t=>t.title)).toEqual(['工程报告仿真光学配置','通用产品参数（来源原文）']);
+  expect(tables[0].rows).toEqual([['K18（K18-STD）','8mm','70°','65°','45m']]);expect(tables[0].sourceRefs[0].type).toBe('engineering_data');
+  expect(tables[1].rows[0][2]).toBe(productFacts[0].value);expect(tables[1].sourceRefs[0].type).toBe('structured_fact');
+ });
+ test('missing customer criteria appear as pending questions rather than invented requirements',async()=>{
+  const project=context();project.unresolved=[{id:'pending',key:'accuracy',question:'精度验收口径待确认。'},{id:'resolved',key:'old',question:'已处理事项。',resolved:true}];
+  const built=await buildSectionContext({...section,tableKind:'requirements'},project,retriever([]).instance,structured,32000);
+  const tables=deterministicBlocks({...section,tableKind:'requirements'},built).filter(b=>b.type==='table');
+  expect(tables.find(t=>t.title==='待确认需求')?.rows).toEqual([['精度验收口径待确认。','待确认']]);
+  expect(tables.find(t=>t.title==='待确认需求')?.sourceRefs).toEqual([]);
  });
 });

@@ -4,7 +4,7 @@ import { load } from 'cheerio';
 import type { DocumentBlock, DocumentSection, GeneratedDocument, GenerationJob, ValidationIssue } from '../packages/document-engine/src/types.js';
 import { defaultOutputProfile } from '../packages/document-engine/src/types.js';
 import type { ProjectAsset, ProjectContext } from '../packages/projects/src/types.js';
-import Projects, { ContextReview, parseFactValue, requirementRows } from '../apps/web/src/Projects.js';
+import Projects, { ContextReview, contextFactPayload, parseFactValue, requirementRows } from '../apps/web/src/Projects.js';
 import DocumentEditor, { BlockEditor, DocumentPlan, GenerationProgress, GenerationSettings, OutputSettings, SectionEditor, ValidationPanel, defaultGenerationConfig, planPayload, planProblem } from '../apps/web/src/DocumentEditor.js';
 
 const resources = vi.hoisted(() => new Map<string, unknown>());
@@ -36,6 +36,40 @@ describe('Project review and proposal editor', () => {
     expect(parseFactValue('K18')).toBe('K18');
     expect(parseFactValue('≤0.1mm')).toBe('≤0.1mm');
     expect(requirementRows(context.requirements).find(row => row.label === '精度要求')).toMatchObject({ evidence: '精度要求≤0.1mm', sourceInputId: 'input-customer', value: '≤0.1mm' });
+  });
+
+  it('offers report optical selection only when actual report configurations exist', () => {
+    expect(render(<ContextReview context={context} confirmed={() => {}} />)('select[aria-label="工程分析光学口径"]')).toHaveLength(0);
+    const opticalContext: ProjectContext = { ...context, engineering: { sourceType: 'scenelab', assets: [], sourceRef: source, deployment: { opticalConfigurations: [{ model: 'K18', variant: 'Standard', lens: { focalLengthMm: 8 }, hfovDeg: 72, vfovDeg: 67, maxWorkingDistanceM: 47, cameraIds: ['camera-1'], sourceRef: source }] } } };
+    const html = render(<ContextReview context={opticalContext} confirmed={() => {}} />);
+    const select = html('select[aria-label="工程分析光学口径"]');
+    expect(select.find('option').map((_i, element) => html(element).attr('value')).get()).toEqual(['unconfirmed', 'report']);
+    expect(select.find('option[selected]').attr('value')).toBe('unconfirmed');
+    expect(html('.context-engineering li').text()).toContain('K18（Standard） · 镜头焦距 8mm · 水平视场角 72° · 垂直视场角 67° · 仿真最大距离 47m');
+    expect(html.text()).toContain('通用产品参数不能替代报告中的仿真输入');
+    expect(button(html, '保存修正').attr('disabled')).toBeDefined();
+  });
+
+  it('restores user optical choice without offering a duplicate generic fact editor', () => {
+    const opticalContext: ProjectContext = { ...context, confirmed: true, engineering: { sourceType: 'scenelab', assets: [], sourceRef: source, deployment: { opticalConfigurations: [{ model: 'K18', lens: { focalLengthMm: 8 }, cameraIds: ['camera-1'], sourceRef: source }] } }, lockedFacts: [...context.lockedFacts, { id: 'choice', key: 'engineering.opticsSource', label: '工程分析光学口径', value: 'report', sourceType: 'user', sourceRef: { ...source, type: 'user' }, locked: true }] };
+    const html = render(<ContextReview context={opticalContext} confirmed={() => {}} />);
+    expect(html('select[aria-label="工程分析光学口径"] option[selected]').attr('value')).toBe('report');
+    expect(html('.context-facts').text()).not.toContain('engineering.opticsSource');
+    expect(html('.context-facts').text()).not.toContain('工程分析光学口径');
+    expect(html('.context-facts article')).toHaveLength(1);
+    expect(html('.context-engineering li').text()).toContain('水平视场角 未提供');
+    expect(button(html, '已确认项目理解').attr('disabled')).toBeDefined();
+    const inferred = render(<ContextReview context={{ ...opticalContext, lockedFacts: opticalContext.lockedFacts.map(fact => fact.key === 'engineering.opticsSource' ? { ...fact, sourceType: 'engineering_data' } : fact) }} confirmed={() => {}} />);
+    expect(inferred('select[aria-label="工程分析光学口径"] option[selected]').attr('value')).toBe('unconfirmed');
+  });
+
+  it('persists one optical source fact from the selector and can explicitly return it to unconfirmed', () => {
+    const facts = [{ key: 'deployment.equipmentCount', label: '设备数量', value: '32', unit: '台' }, { key: 'engineering.opticsSource', label: '旧口径', value: 'product', unit: '' }, { key: ' engineering.opticsSource ', label: '重复口径', value: 'report', unit: '' }, { key: 'scene.boundaryM', label: '场地尺寸', value: '[12,10,5]', unit: 'm' }];
+    const before = structuredClone(facts);
+    expect(contextFactPayload(facts, 'report')).toEqual([{ key: 'deployment.equipmentCount', label: '设备数量', value: 32, unit: '台' }, { key: 'scene.boundaryM', label: '场地尺寸', value: [12, 10, 5], unit: 'm' }, { key: 'engineering.opticsSource', label: '工程分析光学口径', value: 'report' }]);
+    expect(contextFactPayload(facts, 'unconfirmed').filter(fact => fact.key === 'engineering.opticsSource')).toEqual([{ key: 'engineering.opticsSource', label: '工程分析光学口径', value: 'unconfirmed' }]);
+    expect(contextFactPayload(facts).some(fact => fact.key === 'engineering.opticsSource')).toBe(false);
+    expect(facts).toEqual(before);
   });
 
   it('only offers creation of a proposal after the current context is confirmed', () => {

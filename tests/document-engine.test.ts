@@ -44,7 +44,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
   const p=await project(name,description,report),doc=await engine.create(p.id);
   const job=await run(doc);expect(job.errors).toEqual([]);expect(job.status).toBe('completed');
   const result=await engine.get(doc.id);expect(result.sections.every(s=>s.blocks.length>0)).toBe(true);
-  expect(result.sections.every(s=>(s.contextTokens??0)<=12000)).toBe(true);
+  expect(result.sections.every(s=>(s.contextTokens??0)<=job.config.maxContextTokens)).toBe(true);
   const before=calls,exported=await engine.export(doc.id);expect(calls).toBe(before);expect(exported.buffer.subarray(0,2).toString()).toBe('PK');
   const zip=await JSZip.loadAsync(exported.buffer);expect(await zip.file('word/document.xml')!.async('string')).toContain('TOC');
   expect(Object.keys(zip.files).filter(k=>k.startsWith('word/media/')&&!zip.files[k].dir).length).toBe(report?6:0);
@@ -106,7 +106,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
   await projects.addText(p.id,{text:'新的客户需求：验收条件需要重新确认。'});release();slow=undefined;
   const job=await wait(doc.id);expect(job.status).toBe('failed');expect((await engine.get(doc.id)).contextStale).toBe(true);
  });
- test('independent chapters run in batches of at most three calls and keep their own results',async()=>{
+ test('independent chapters run with at most three calls and keep their own results',async()=>{
   const p=await project('并行章节'),doc=await engine.create(p.id),targets=doc.sections.filter(s=>s.generationMode==='ai').slice(0,4).map(s=>s.id),before=calls;
   let release!:()=>void;slow=new Promise<void>(r=>release=r);
   try{
@@ -145,7 +145,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
   const p=await project('人工修正',undefined,true),before=await projects.getContext(p.id),patched=await projects.patchContext(p.id,{revision:before.revision,facts:[{key:'deployment.equipmentCount',label:'相机数量',value:32,unit:'台'},{key:'performance.p95ErrorMm',label:'P95理论误差',value:.1,unit:'mm'}]});
   expect(patched.engineering?.deployment?.equipmentCount).toBe(2);expect(patched.conflicts.some(c=>c.key==='deployment.equipmentCount')).toBe(true);
   await projects.confirmContext(p.id,patched.revision);const doc=await engine.create(p.id),equipment=doc.sections.find(s=>s.tableKind==='equipment')!,accuracy=doc.sections.find(s=>s.title==='理论精度分析')!;
-  const context=await projects.getContext(p.id),equipmentContext=await buildSectionContext(equipment,context,engine.retriever,engine.structured,12000),accuracyContext=await buildSectionContext(accuracy,context,engine.retriever,engine.structured,12000);
+  const context=await projects.getContext(p.id),equipmentContext=await buildSectionContext(equipment,context,engine.retriever,engine.structured,32000),accuracyContext=await buildSectionContext(accuracy,context,engine.retriever,engine.structured,32000);
   const countTable=deterministicBlocks(equipment,equipmentContext).find(b=>b.type==='table'),accuracyTable=deterministicBlocks(accuracy,accuracyContext).find(b=>b.type==='table');
   expect(countTable).toMatchObject({rows:[['K18','32','用户确认']]});if(accuracyTable?.type==='table')expect(accuracyTable.rows.find(r=>r[0].includes('P95'))?.[1]).toBe('0.1mm');else throw new Error('missing engineering table');
  });

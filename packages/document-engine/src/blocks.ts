@@ -26,9 +26,20 @@ export function deterministicBlocks(section:DocumentSection,sc:SectionContext):D
  const c=sc.context,engineering=effectiveEngineering(c),out:DocumentBlock[]=[];
  if(section.fixedContent)out.push({id:randomUUID(),type:'paragraph',text:section.fixedContent});
  const table=(title:string,columns:string[],rows:string[][],sourceRefs:SourceRef[])=>{if(rows.length)out.push({id:randomUUID(),type:'table',title,columns,rows,sourceRefs,generated:true});};
- if(section.tableKind==='requirements')table('客户要求与确认状态',['指标 / 要求','内容','状态'],allRequirements(c).map(r=>[r.key??'项目要求',String(r.value),r.confirmedByUser?'已确认要求':'待确认要求']),allRequirements(c).map(r=>({type:'project_input',id:r.sourceChunkId??r.sourceInputId,label:r.key??'要求',evidence:r.evidence})));
+ if(section.tableKind==='requirements'){
+  table('客户要求与确认状态',['指标 / 要求','内容','状态'],allRequirements(c).map(r=>[r.key??'项目要求',String(r.value),r.confirmedByUser?'已确认要求':'待确认要求']),allRequirements(c).map(r=>({type:'project_input',id:r.sourceChunkId??r.sourceInputId,label:r.key??'要求',evidence:r.evidence})));
+  table('待确认需求',['需确认的内容','状态'],c.unresolved.filter(q=>!q.resolved).map(q=>[q.question,'待确认']),[]);
+ }
   if(section.tableKind==='equipment')table('已确认设备配置',['设备型号','数量（台）','配置依据'],(engineering?.deployment?.models??[]).map(m=>[m.name,String(m.count),c.lockedFacts.some(f=>f.sourceType==='user'&&f.key.startsWith('deployment.'))?'用户确认':'工程设计数据']),engineering?[asSource(engineering.sourceRef),...c.lockedFacts.filter(f=>f.sourceType==='user'&&f.key.startsWith('deployment.')).map(f=>asSource(f.sourceRef))]:[]);
- if(section.tableKind==='products')table('权威产品参数',['产品型号','参数','规格'],sc.facts.map(f=>[f.productKey,f.field,`${String(f.value)}${f.unit??''}`]),sc.facts.map(factSource));
+ if(section.tableKind==='products'){
+  const optics=engineering?.deployment?.opticalConfigurations??[];
+  if(optics.length){
+   const value=(v:number|null|undefined,unit:string)=>v==null?'未提供':`${v}${unit}`;
+   table('工程报告仿真光学配置',['报告型号','镜头焦距','仿真水平视场角','仿真垂直视场角','仿真最大距离'],optics.map(o=>[o.variant?`${o.model}（${o.variant}）`:o.model,value(o.lens?.focalLengthMm,'mm'),value(o.hfovDeg,'°'),value(o.vfovDeg,'°'),value(o.maxWorkingDistanceM,'m')]),optics.map(o=>asSource(o.sourceRef)));
+   out.push({id:randomUUID(),type:'paragraph',text:c.lockedFacts.some(f=>f.key==='engineering.opticsSource'&&f.value==='report')?'本项目工程分析采用已选择的报告光学配置。以下通用产品参数保留来源原文，其光学参数不替代本次仿真输入；实际供货型号与镜头需按本项目配置核对。':'报告光学配置与通用产品参数需分别核对，确认采用口径后方可解释对应配置的工程结果。'});
+  }
+  table(optics.length?'通用产品参数（来源原文）':'权威产品参数',['产品型号','参数','规格'],sc.facts.map(f=>[f.productKey,f.field,`${String(f.value)}${f.unit??''}`]),sc.facts.map(factSource));
+ }
  if(section.tableKind==='engineering'&&engineering){
   const p=engineering.performance??{},accuracy=section.id.includes('accuracy')||/精度|误差/.test(section.title);
   const rows=accuracy?[['平均理论误差',p.meanErrorMm,'mm'],['P90 理论误差',p.p90ErrorMm,'mm'],['P95 理论误差',p.p95ErrorMm,'mm'],['理论误差 ≤0.3 mm 占比',p.under03Mm,'%'],['理论误差 ≤0.5 mm 占比',p.under05Mm,'%']]:[['≥1 视角覆盖率',p.coverageGe1,'%'],['≥2 视角覆盖率',p.coverageGe2,'%'],['≥3 视角覆盖率',p.coverageGe3,'%'],['≥4 视角覆盖率',p.coverageGe4,'%'],['≥5 视角覆盖率',p.coverageGe5,'%'],['平均可见视角数',p.averageViewCount,'']];

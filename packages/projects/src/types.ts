@@ -7,10 +7,11 @@ export interface ProjectRequirements {
  interfaces:RequirementItem[];protocols:RequirementItem[];environment:RequirementItem[];installationConstraints:RequirementItem[];specialRequirements:RequirementItem[];acceptanceCriteria:RequirementItem[];unresolved:RequirementQuestion[];
 }
 export interface ProjectAsset { id:string;projectId:string;inputId:string;role:string;filename:string;mimeType:string;objectKey:string;width?:number;height?:number;caption?:string;sourceRef:SourceReference;url:string }
+export interface EngineeringOpticalConfiguration { model:string;variant?:string;lens?:{focalLengthMm?:number|null;apertureF?:number|null};hfovDeg?:number|null;vfovDeg?:number|null;maxWorkingDistanceM?:number|null;rangeMode?:string;cameraIds:string[];sourceRef:SourceReference }
 export interface EngineeringData {
- sourceType:string;scene?:{boundaryM?:[number,number,number]};deployment?:{equipmentCount?:number;models?:{name:string;count:number}[]};
+ sourceType:string;scene?:{boundaryM?:[number,number,number]};deployment?:{equipmentCount?:number;models?:{name:string;count:number}[];opticalConfigurations?:EngineeringOpticalConfiguration[]};
  performance?:{coverageGe1?:number;coverageGe2?:number;coverageGe3?:number;coverageGe4?:number;coverageGe5?:number;averageViewCount?:number;meanErrorMm?:number|null;p90ErrorMm?:number|null;p95ErrorMm?:number|null;under03Mm?:number;under05Mm?:number};
- assets:ProjectAsset[];sourceRef:SourceReference;metadata?:{schemeId?:string;schemeRevision?:number;generatedAt?:string;accuracyMetric?:string;coverageUnit?:string};
+ assets:ProjectAsset[];sourceRef:SourceReference;metadata?:{adapterVersion?:number;schemeId?:string;schemeRevision?:number;generatedAt?:string;accuracyMetric?:string;coverageUnit?:string};
 }
 export interface LockedFact { id:string;key:string;label:string;value:unknown;unit?:string;sourceType:'customer_requirement'|'engineering_data'|'structured_fact'|'user';sourceRef:SourceReference;locked:true }
 export interface ProjectCapability { key:string;label:string;value:unknown;unit?:string;sourceRef:SourceReference }

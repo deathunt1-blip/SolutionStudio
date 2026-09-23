@@ -5,8 +5,9 @@ import {asSource,allRequirements} from './context.js';
 import {blockText} from './blocks.js';
 import type {StructuredFact} from '../../structured/src/types.js';
 
-type Metric = 'count'|'accuracy'|'p95'|'p90'|'mean'|'frameRate'|'latency'|'fov'|'resolution'|'boundary'|'range'|'viewCount'|`coverage${string}`|`under${string}`|'percentage';
-interface Quantity {metric:Metric;value:number|number[];unit:string;raw:string;quote:string;factor:number;model?:string}
+type Metric = 'count'|'accuracy'|'p95'|'p90'|'mean'|'frameRate'|'latency'|'fov'|'focalLength'|'workingDistance'|'resolution'|'boundary'|'range'|'viewCount'|`coverage${string}`|`under${string}`|'percentage';
+type OpticalScope='report'|'product';
+interface Quantity {metric:Metric;value:number|number[];unit:string;raw:string;quote:string;factor:number;model?:string;scope?:OpticalScope;axis?:'horizontal'|'vertical'}
 interface Evidence extends Quantity {source:SourceRef;priority:number;requirement:boolean}
 const normalize=(value:string)=>value.normalize('NFKC').replace(/\s+/g,'').toLowerCase();
 const numeric=/(?<![\w.])(\d+(?:\.\d+)?)\s*(万像素|像素|毫秒|毫米|厘米|赫兹|帧(?:\s*\/\s*秒)?|[kM]?Hz|fps|mm|cm|ms|m(?![a-z])|米|秒|s(?![a-z])|%|％|度|°|台|视点|视角)/gi;
@@ -23,14 +24,19 @@ function quantityModel(text:string,start:number,end:number,metric:Metric):string
 const protocolPattern=/\b(?:PTP|NTP|TTL|SDK|USB(?:\s*[23](?:\.\d)?)?|EtherCAT|GigE|TCP\/IP|UDP|RS[- ]?(?:232|485))\b/gi;
 const uncertain=/(?:待确认|待核实|待验证|尚未确认|尚未提供|未提供|有待|待测|拟采用|建议(?:采用|配置|选用)?|是否支持|是否满足)/;
 const negative=/(?:不满足|不能满足|未满足|尚未满足|未达到|无法达到|不能达到|不保证|不支持|不具备|尚不支持|无法支持)/;
-const normative=/(?:应(?:当|该)?|宜|须|必须)(?:为|达到|满足|支持|具备|实现|采用|配置|选用|不低于|不高于|不大于|不小于|至少)|(?:不得|不应|不宜)(?:低于|高于|大于|小于)|(?:示例|举例|假设|若客户)/;
+const normativeOperator=/(?:应(?:当|该)?|宜|须|必须)\s*(?:为|达到|满足|支持|具备|实现|采用|配置|选用|不低于|不高于|不大于|不小于|不超过|至少|[≤≥<>]=?)|(?:不得|不应|不宜)\s*(?:低于|高于|大于|小于)/g;
+const normative=new RegExp(normativeOperator.source+'|(?:示例|举例|假设|若客户)');
+const standardTitle=/标准|规范|规程|standard|(?:^|[\s_])(?:GB|ISO|IEC|IEEE|EN|T[\/_])[\s\/_\d.-]/i;
 const requirementWording=/(?:客户|项目|用户)[^，；。]{0,12}(?:要求|目标|期望)|(?:要求|目标|期望|需求指标)/;
 const capabilityWording=/(?:满足|达到|支持|具备|实现|能够|可达|保证|配置|采用|部署|配备|选用)/;
-const metricLabels:Partial<Record<Metric,string>>={count:'设备数量',accuracy:'精度',p95:'P95 理论误差',p90:'P90 理论误差',mean:'平均理论误差',frameRate:'帧率',latency:'时延',fov:'视场角',resolution:'分辨率',boundary:'场地尺寸',range:'距离',viewCount:'平均可见视点数',percentage:'比例'};
+const metricLabels:Partial<Record<Metric,string>>={count:'设备数量',accuracy:'精度',p95:'P95 理论误差',p90:'P90 理论误差',mean:'平均理论误差',frameRate:'帧率',latency:'时延',fov:'视场角',focalLength:'镜头焦距',workingDistance:'光学工作距离',resolution:'分辨率',boundary:'场地尺寸',range:'距离',viewCount:'平均可见视点数',percentage:'比例'};
+const opticalMetric=(metric:Metric)=>['fov','focalLength','workingDistance'].includes(metric);
 
 function metricFromLabel(label:string):Metric|undefined {
  const value=normalize(label);
  if(/boundary|场地尺寸|空间尺寸|场地边界/.test(value))return 'boundary';
+ if(/focallength|焦距/.test(value))return 'focalLength';
+ if(/maxworkingdistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离/.test(value))return 'workingDistance';
  const ratio=/占比|比例|%/.test(value);
  if(/under03/.test(value)||ratio&&/(?<![\d.])0\.30*(?:mm|毫米)/.test(value))return 'under03';
  if(/under05/.test(value)||ratio&&/(?<![\d.])0\.50*(?:mm|毫米)/.test(value))return 'under05';
@@ -47,12 +53,12 @@ function metricFromLabel(label:string):Metric|undefined {
  if(/resolution|分辨率|像素/.test(value))return 'resolution';
  if(/accuracy|精度|误差/.test(value))return 'accuracy';
  if(/coverage|覆盖率/.test(value))return 'coverage';
- if(/range|距离|范围|長度|长度|高度/.test(value))return 'range';
+ if(/range|距离|范围|長度|长度|宽度|高度|边长/.test(value))return 'range';
 }
 function defaultUnit(metric:Metric|undefined):string {
- if(metric==='count')return '台';if(['accuracy','p95','p90','mean'].includes(metric??''))return 'mm';
+ if(metric==='count')return '台';if(['accuracy','p95','p90','mean','focalLength'].includes(metric??''))return 'mm';
  if(metric==='frameRate')return 'fps';if(metric==='latency')return 'ms';if(metric==='fov')return '°';
- if(metric==='resolution')return '像素';if(metric==='range'||metric==='boundary')return 'm';
+ if(metric==='resolution')return '像素';if(metric==='range'||metric==='boundary'||metric==='workingDistance')return 'm';
  if(metric==='viewCount')return '视点';if(metric?.startsWith('coverage')||metric?.startsWith('under')||metric==='percentage')return '%';return '';
 }
 function quantities(text:string,forced?:Metric):Quantity[] {
@@ -60,7 +66,10 @@ function quantities(text:string,forced?:Metric):Quantity[] {
  const tuples=[...text.matchAll(/(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米|像素|px)?\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米|像素|px)?(?:\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米|像素|px)?)?/g)];
  const tupleSpans:[number,number][]=[];
  for(const match of tuples){
-  const metric=match[5]?'boundary':forced==='resolution'||/分辨率|resolution|像素/i.test(text)?'resolution':undefined;
+  // Camera specification cells often use "4608x4096@170fps" without the word
+  // resolution. Do not infer pixels from a bare width/height pair or length units.
+  const resolutionAtRate=!match[5]&&!match[2]&&!match[4]&&/^\d+$/.test(match[1])&&/^\d+$/.test(match[3])&&/^\s*@\s*\d+(?:\.\d+)?\s*(?:fps\b|Hz\b|帧(?:\s*\/\s*秒)?)/i.test(text.slice(match.index!+match[0].length));
+  const metric=match[5]?'boundary':forced==='resolution'||/分辨率|resolution|像素/i.test(text)||resolutionAtRate?'resolution':undefined;
   if(!metric)continue;
   const sharedUnit=match[6]??match[4]??match[2]??'';
   const factorFor=(unit:string)=>metric==='resolution'?1:/mm|毫米/.test(unit)?.001:/cm|厘米/.test(unit)?.01:1;
@@ -70,13 +79,19 @@ function quantities(text:string,forced?:Metric):Quantity[] {
  }
  for(const match of text.matchAll(numeric)){
   if(tupleSpans.some(([start,end])=>match.index!>=start&&match.index!<end))continue;
-  const raw=match[1],unit=match[2],value=Number(raw),label=forced??metricFromLabel(text);
+  const raw=match[1],unit=match[2],value=Number(raw);
+  // A table row can contain focal length, FOV and working distance together.
+  // Use the nearest field label for lengths rather than treating every mm as accuracy.
+  const before=text.slice(0,match.index!),nearby=[...before.matchAll(/focalLength|焦距|maxWorkingDistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov|P95|P90|精度|误差|场地尺寸|长度|宽度|高度|边长/gi)].at(-1)?.[0];
+  const lensAfter=/^\s*(?:的)?(?:镜头|焦距)/.test(text.slice(match.index!+match[0].length));
+  const opticalContext=/focalLength|焦距|镜头|maxWorkingDistance|工作距离|追踪|跟踪|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov/i.test(text);
+  const label=forced??(lensAfter?'focalLength':opticalContext&&nearby?metricFromLabel(nearby):metricFromLabel(text));
   let metric:Metric,factor=1,canonical=unit;
   if(/^(mm|毫米|cm|厘米|m|米)$/i.test(unit)){
    if(label?.startsWith('under')&&[.3,.5].includes(value))continue;
-   metric=label&&['p95','p90','mean','accuracy','range','boundary'].includes(label)?label:'accuracy';
+    metric=label&&['p95','p90','mean','accuracy','range','boundary','focalLength','workingDistance'].includes(label)?label:'accuracy';
    factor=/cm|厘米/i.test(unit)?10:/^(m|米)$/i.test(unit)?1000:1;canonical='mm';
-   if(metric==='range'||metric==='boundary'){factor/=1000;canonical='m';}
+    if(metric==='range'||metric==='boundary'||metric==='workingDistance'){factor/=1000;canonical='m';}
   }else if(/^(fps|[kM]?Hz|赫兹|帧)/i.test(unit)){metric='frameRate';factor=/^kHz$/i.test(unit)?1000:unit==='MHz'?1000000:unit==='mHz'?.001:1;canonical='fps';}
   else if(/^(ms|毫秒|秒|s)$/i.test(unit)){metric='latency';factor=/^(s|秒)$/.test(unit)?1000:1;canonical='ms';}
   else if(/[%％]/.test(unit)){metric=label?.startsWith('coverage')||label?.startsWith('under')?label:'percentage';canonical='%';}
@@ -84,7 +99,9 @@ function quantities(text:string,forced?:Metric):Quantity[] {
   else if(/像素/.test(unit)){metric='resolution';factor=unit==='万像素'?10000:1;canonical='pixels';}
   else if(/视点|视角/.test(unit)){if(label!=='viewCount')continue;metric='viewCount';canonical='views';}
   else {metric='count';canonical='count';}
-  result.push({metric,value:value*factor,unit:canonical,raw,quote:match[0],factor,model:quantityModel(text,match.index!,match.index!+match[0].length,metric)});
+  const axisLabel=[...before.matchAll(/水平|横向|hfov|垂直|纵向|vfov/gi)].at(-1);
+  const axis=metric==='fov'&&axisLabel&&before.length-(axisLabel.index!+axisLabel[0].length)<=12?/水平|横向|hfov/i.test(axisLabel[0])?'horizontal':'vertical':undefined;
+  result.push({metric,value:value*factor,unit:canonical,raw,quote:match[0],factor,model:quantityModel(text,match.index!,match.index!+match[0].length,metric),...(axis?{axis}:{})});
  }
  return result;
 }
@@ -103,7 +120,7 @@ function productReference(ref:SourceRef):boolean {
  if(ref.type!=='knowledge_chunk')return true;
  // Classification authority is not enough: a standard or previous tender can be
  // authoritative about its own contents without proving this product's capability.
- if(/标准|规范|规程|standard|(?:^|[\s_])(?:GB|ISO|IEC|IEEE|EN|T[\/_])[\s\/_\d.-]/i.test(ref.label))return false;
+ if(standardTitle.test(ref.label))return false;
  if(/历史|案例|示例|招标|投标|采购|合同|项目|方案|proposal|tender|\bbid\b/i.test(ref.label))return false;
  if(ref.authority==='authoritative')return true;
  return ref.authority==='reference'&&/产品|规格|参数|说明|手册|技术文档|技术资料|SDK|接口|manual|datasheet|specification/i.test(ref.label);
@@ -119,7 +136,7 @@ function textEvidence(text:string,source:SourceRef,priority:number,requirement:b
  const sourceModel=singleModel(source.label+' '+text);
  return text.split(/[。！？\n，；]+/).flatMap(sentence=>{
    if(!requirement&&(uncertain.test(sentence)||negative.test(sentence)||normative.test(sentence)||isRequirement(sentence)))return [];
-  return quantities(sentence,forced).map(value=>({...value,model:value.model??sourceModel,source,priority,requirement}));
+  return quantities(sentence,forced).filter(value=>value.metric!=='accuracy'||forced==='accuracy'||/精度|误差|accuracy|error/i.test(sentence)).map(value=>({...value,model:value.model??sourceModel,...(opticalMetric(value.metric)?{scope:source.type==='engineering_data'?'report' as const:'product' as const}:{}),source,priority,requirement}));
  });
 }
 function contextEvidence(context:ProjectContext):Evidence[] {
@@ -145,6 +162,11 @@ function contextEvidence(context:ProjectContext):Evidence[] {
   if(e.deployment?.equipmentCount!==undefined)add('equipmentCount','相机数量',e.deployment.equipmentCount,'台',e.sourceRef,1);
   if(e.deployment?.models)add('models','相机型号与数量',e.deployment.models,undefined,e.sourceRef,1);
   for(const [key,value] of Object.entries(e.performance??{}))if(value!==undefined&&value!==null)add(key,key,value,defaultUnit(metricFromLabel(key)),e.sourceRef,1);
+  for(const optics of e.deployment?.opticalConfigurations??[]){
+   for(const [metric,value,unit,label] of [['focalLength',optics.lens?.focalLengthMm,'mm','镜头焦距'],['fov',optics.hfovDeg,'°','水平视场角'],['fov',optics.vfovDeg,'°','垂直视场角'],['workingDistance',optics.maxWorkingDistanceM,'m','仿真最大距离']] as const){
+    if(typeof value==='number'&&Number.isFinite(value))result.push({metric,value,unit,raw:String(value),quote:`报告 ${optics.model} ${label} ${value}${unit}`,factor:1,model:optics.model.toUpperCase(),scope:'report',...(metric==='fov'?{axis:label==='水平视场角'?'horizontal' as const:'vertical' as const}:{}),source:asSource(optics.sourceRef),priority:1,requirement:false});
+   }
+  }
  }
  for(const capability of context.capabilities)add(capability.key,capability.label,capability.value,capability.unit,capability.sourceRef,2);
  // Always validate against the document's authoritative snapshot, even if the current chapter did not retrieve that parameter.
@@ -167,8 +189,25 @@ function segments(block:DocumentBlock):string[] {
   }).join(' ')} ${rowLabel}`;
  });
 }
+/** Remove only grounded, explicitly quoted standard clauses from capability
+ * checks. The rest of the same sentence still receives ordinary validation. */
+function withoutStandardQuotations(sentence:string,block:DocumentBlock,refs:SourceRef[]):string {
+ if(block.type==='table'||!/标准|规范|规程/.test(sentence))return sentence;
+ const full=blockText(block);
+ if(!/设计参考/.test(full)||!/(?:不代表|不构成|不等同|不作为)[^。；\n]{0,50}(?:实测|验收|性能承诺)/.test(full))return sentence;
+ const standardValues=refs.filter(ref=>ref.type==='knowledge_chunk'&&ref.authority!=='style_only'&&standardTitle.test(ref.label)).flatMap(ref=>ref.evidence.split(/[。！？\n，；]+/).flatMap(text=>quantities(text)));
+ return sentence.replace(/[“「『"]([^”」』"]+)[”」』"]/g,(quoted,inner:string)=>{
+  const operators=[...inner.matchAll(normativeOperator)],values=quantities(inner);
+  if(!operators.length||!values.length||values.length>operators.length)return quoted;
+  if(/本项目|本系统|本产品|所选|当前(?:系统|产品|设备)|已(?:实测|达到|支持|具备|实现|满足)/.test(inner))return quoted;
+  // A normative phrase cannot shield a second asserted capability in the quote.
+  const remainder=inner.replace(normativeOperator,'').replace(/系统支持的/g,'');
+  if(capabilityWording.test(remainder)||!values.every(value=>standardValues.some(evidence=>sameQuantity(value,evidence))))return quoted;
+  return '标准条款';
+ });
+}
 function selectedEvidence(claim:Quantity,evidence:Evidence[],requirement:boolean,products:string[]):Evidence[] {
- let candidates=evidence.filter(item=>item.requirement===requirement&&item.metric===claim.metric&&item.unit===claim.unit);
+ let candidates=evidence.filter(item=>item.requirement===requirement&&item.metric===claim.metric&&item.unit===claim.unit&&(!claim.scope||item.scope===claim.scope)&&(!claim.axis||!item.axis||item.axis===claim.axis));
  if(!requirement){
   const selected=products.map(model=>model.toUpperCase()),model=claim.model??(selected.length===1?selected[0]:undefined);
   // Library product evidence must identify the same selected model. A generic
@@ -182,6 +221,21 @@ function selectedEvidence(claim:Quantity,evidence:Evidence[],requirement:boolean
  else if(claim.model)candidates=candidates.filter(item=>item.model===claim.model);
  if(!candidates.length)return [];
  const priority=Math.min(...candidates.map(item=>item.priority));return candidates.filter(item=>item.priority===priority);
+}
+function opticalClaimScope(sentence:string,block:DocumentBlock,context:ProjectContext,claim:Quantity,evidence:Evidence[]):OpticalScope|'unclear' {
+ if(block.type==='table'){
+  if(/权威产品参数|通用产品|产品规格/.test(block.title))return 'product';
+  if(/报告|仿真/.test(block.title))return 'report';
+ }
+ // A simulation input is never evidence of a verified product operating range.
+ if(/实测|实证|已验证|已达到|已具备|实际(?:工作|追踪|跟踪|性能|能力|距离)|性能承诺|保证[^。；]{0,20}(?:追踪|跟踪|距离|视场角)/.test(sentence))return 'product';
+ const report=/仿真|SceneLab|报告(?:中|配置|光学|参数|给出|采用|输入|的)|工程报告|理论光学/i.test(sentence);
+ const product=/通用产品|产品(?:参数|规格|标称|手册|能力|追踪|跟踪|工作距离)|标称|出厂|规格书/.test(sentence);
+ if(report&&product)return 'unclear';if(report)return 'report';if(product)return 'product';
+ const selectedReport=context.lockedFacts.some(fact=>fact.key==='engineering.opticsSource'&&fact.value==='report');
+ if(selectedReport&&(/(?:本次|本项目)(?:工程|设计)|工程输入|设计输入|镜头配置/.test(sentence)||claim.metric==='focalLength'&&/采用|使用|选用|配置/.test(sentence)))return 'report';
+ const relevant=evidence.filter(item=>item.metric===claim.metric&&(!claim.model||item.model===claim.model));
+ return relevant.some(item=>item.scope==='report')?'unclear':'product';
 }
 
 /** Metric, unit and source role must agree: an unrelated matching number cannot
@@ -198,7 +252,8 @@ export function validateSections(sections:DocumentSection[],context:ProjectConte
   for(const block of section.blocks){
    if(block.type==='asset'){if(!context.assets.some(asset=>asset.id===block.assetId))add(section,'missing_source','图片不属于本项目快照。',block.caption,[],block.id);continue;}
    const refs=block.type==='table'&&block.sourceRefs.length?block.sourceRefs:section.sourceRefs;
-   for(const sentence of segments(block)){
+   for(const original of segments(block)){
+    const sentence=withoutStandardQuotations(original,block,refs);
     const quote=sentence.trim();if(!quote)continue;
     const pending=uncertain.test(sentence),requirement=isRequirement(sentence)||(block.type==='table'&&/客户要求|需求|确认状态/.test(block.title)&&!capabilityWording.test(sentence));
     const claims=section.claims.filter(claim=>claim.text.includes(quote)||quote.includes(claim.text));
@@ -213,6 +268,11 @@ export function validateSections(sections:DocumentSection[],context:ProjectConte
     const referenceEvidence=validRefs.flatMap(ref=>textEvidence(ref.evidence,ref,ref.type==='structured_fact'?2:3,requirementReference(ref),metricFromLabel(ref.label)));
     const evidence=[...base,...referenceEvidence],values=quantities(sentence);
     for(const claim of values){
+     if(opticalMetric(claim.metric)&&!requirement){
+      const scope=opticalClaimScope(sentence,block,context,claim,evidence);
+      if(scope==='unclear'){add(section,'unsupported_claim',`${metricLabels[claim.metric]}未说明报告仿真配置或通用产品规格口径，请明确后核对；两类参数不能互相替代。`,claim.quote,evidence.filter(item=>item.metric===claim.metric).map(item=>item.source),block.id,'warning');continue;}
+      claim.scope=scope;
+     }
      const candidates=selectedEvidence(claim,evidence,requirement,context.products);
      if(candidates.some(candidate=>sameQuantity(claim,candidate)))continue;
      const strong=candidates.filter(candidate=>candidate.priority<=2);
