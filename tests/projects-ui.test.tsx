@@ -118,8 +118,9 @@ describe('Project review and proposal editor', () => {
     const select = html('select[aria-label="封面 Logo"]');
     expect(select.find('option').map((_i, el) => html(el).attr('value')).get()).toEqual(['', 'logo-png', 'logo-jpeg', 'logo-jpg']);
     expect(select.find('option[selected]').attr('value')).toBe('');
-    expect(select.find('option[selected]').text()).toBe('不显示 Logo');
-    expect(html('input[type=url], input[type=file]')).toHaveLength(0);
+    expect(select.find('option[selected]').text()).toBe('使用公司名称');
+    expect(html('input[type=url]')).toHaveLength(0);
+    expect(html('input[type=file]').attr('accept')).toBe('image/png,image/jpeg');
   });
 
   it('shows the saved cover logo and retains an option to clear it', () => {
@@ -128,7 +129,7 @@ describe('Project review and proposal editor', () => {
     const select = html('select[aria-label="封面 Logo"]');
     expect(select.find('option[selected]').attr('value')).toBe('logo');
     expect(select.find('option[selected]').text()).toBe('公司标志');
-    expect(select.find('option[value=""]').text()).toBe('不显示 Logo');
+    expect(select.find('option[value=""]').text()).toBe('使用公司名称');
   });
 
   it('shows a persisted partial failure without discarding completed progress or cost', () => {

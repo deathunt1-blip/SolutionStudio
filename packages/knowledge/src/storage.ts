@@ -1,4 +1,4 @@
-import { mkdir, readFile, open, link, unlink } from 'node:fs/promises';
+import { mkdir, readFile, open, link, unlink, rename } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ObjectStorage } from '../../core/src/types.js';
@@ -47,4 +47,13 @@ export class LocalObjectStorage implements ObjectStorage {
     }
   }
   async get(key: string): Promise<Uint8Array> { return readFile(this.path(key)); }
+  /** Mutable derived response lookup only; originals and response history remain immutable. */
+  async replaceCache(key:string,data:Uint8Array):Promise<void>{
+    if(!/^enrichment-responses\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}\/[a-f0-9]{64}\.json$/.test(key))throw new Error('Only an enrichment response cache can be replaced');
+    const target=this.path(key),temporary=`${target}.${randomUUID()}.tmp`;
+    await mkdir(dirname(target),{recursive:true});const handle=await open(temporary,'wx',0o600);
+    try{try{await handle.writeFile(data);}finally{await handle.close();}await rename(temporary,target);}
+    finally{await unlink(temporary).catch(error=>{if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;});}
+  }
+  async delete(key:string):Promise<void>{const target=this.path(key);await unlink(target).catch(error=>{if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;});}
 }

@@ -7,7 +7,18 @@ export async function registerDocumentEngineRoutes(app:FastifyInstance,engine:Do
  app.get('/api/document-templates',async()=>({items:await engine.templates()}));
  app.get('/api/projects/:id/documents',async r=>({items:await engine.list(params(r).id)}));
  app.post('/api/projects/:id/documents',async r=>({document:await engine.create(params(r).id,body(r))}));
+ app.delete('/api/generated-documents/:id',async r=>engine.remove(params(r).id));
+ app.post('/api/generated-documents/:id/copy',async r=>({document:await engine.copy(params(r).id)}));
+ app.post('/api/generated-documents/:id/save-template',async r=>({template:await engine.saveTemplate(params(r).id,body(r))}));
+ app.get('/api/generated-documents/:id/sections/:sectionId/references',async r=>({items:await engine.references(params(r).id,params(r).sectionId)}));
  app.get('/api/generated-documents/:id',async r=>({document:await engine.get(params(r).id)}));
+ app.get('/api/generated-documents/:id/assets',async r=>{
+  const document=await engine.get(params(r).id);
+  const referenced=new Set(document.sections.flatMap(section=>section.blocks.flatMap(block=>block.type==='asset'?[block.assetId]:[])));
+  if(document.outputProfile.coverLogoAssetId)referenced.add(document.outputProfile.coverLogoAssetId);
+  const assets=await engine.projects.listAssets(document.projectId,true);
+  return {items:assets.filter(asset=>asset.projectId===document.projectId&&(!asset.retiredAt||referenced.has(asset.id)))};
+ });
  app.patch('/api/generated-documents/:id',async r=>({document:await engine.patch(params(r).id,body(r))}));
  app.patch('/api/generated-documents/:id/plan',async r=>({document:await engine.plan(params(r).id,body(r))}));
  app.patch('/api/generated-documents/:id/sections/:sectionId',async r=>({document:await engine.edit(params(r).id,params(r).sectionId,body(r))}));

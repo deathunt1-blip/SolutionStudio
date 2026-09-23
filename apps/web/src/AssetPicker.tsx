@@ -1,0 +1,12 @@
+import {useState} from 'react';
+import type {ProjectAsset} from '../../../packages/projects/src/types.js';
+import {api,post} from './api.js';
+import {Modal,ErrorMessage,useResource,useDebounce} from './ui.js';
+export function AssetPicker({documentId,onClose,onSelected}:{documentId:string;onClose:()=>void;onSelected:(a:ProjectAsset)=>void}){
+ const doc=useResource<{document:{projectId:string}}>(`/generated-documents/${documentId}`),[query,setQuery]=useState(''),[selected,setSelected]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),debounced=useDebounce(query);
+ const documents=useResource<{items:{id:string;title:string}[]}>(`/documents?status=active&pageSize=30&q=${encodeURIComponent(debounced)}`);
+ const images=useResource<{items:{id:string;url:string;filename:string}[]}>(selected?`/documents/${selected}/images`:null);
+ const upload=async(file?:File)=>{if(!file||!doc.data)return;setBusy(true);setError('');try{const data=new FormData();data.append('file',file);const result=await api<{asset:ProjectAsset}>(`/projects/${doc.data.document.projectId}/assets`,{method:'POST',body:data});onSelected(result.asset);}catch(e){setError(e instanceof Error?e.message:'上传失败');}finally{setBusy(false);}};
+ const copy=async(imageId:string)=>{if(!doc.data)return;setBusy(true);setError('');try{const result=await post<{asset:ProjectAsset}>(`/projects/${doc.data.document.projectId}/knowledge-images`,{documentId:selected,imageId});onSelected(result.asset);}catch(e){setError(e instanceof Error?e.message:'图片导入失败');}finally{setBusy(false);}};
+ return <Modal title="插入方案配图" close={onClose}><div className="asset-picker">{error&&<ErrorMessage message={error}/>}<label className="field">上传图片<input type="file" accept="image/png,image/jpeg" disabled={busy} onChange={e=>void upload(e.target.files?.[0])}/></label><h3>知识库已有图片</h3><input placeholder="搜索产品或资料名称" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="图片来源资料" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">选择资料</option>{documents.data?.items.map(d=><option key={d.id} value={d.id}>{d.title}</option>)}</select><p className="subtle">读取 Word、Excel 和演示文稿中的原始 PNG / JPEG 图片。</p>{images.error&&<ErrorMessage message={images.error}/>}<div className="asset-library-grid">{images.data?.items.map(img=><button className="button" key={img.id} disabled={busy} onClick={()=>void copy(img.id)}><img src={img.url} alt={img.filename}/></button>)}</div>{selected&&images.data?.items.length===0&&<p>此资料没有可提取的 PNG / JPEG 图片。</p>}</div></Modal>;
+}

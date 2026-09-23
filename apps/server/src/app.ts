@@ -1,3 +1,6 @@
+import {KnowledgeEnrichmentService} from '../../../packages/knowledge-enrichment/src/service.js';
+import {registerEnrichmentRoutes} from './enrichment-routes.js';
+import {registerImageRoutes} from './image-routes.js';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
@@ -39,6 +42,7 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  const db=await openDatabase(dataDir,options.databaseUrl ?? process.env.DATABASE_URL);
  const providerFactory=options.providerFactory??((config:LLMConfig)=>new KimiProvider(config));
  const service=new KnowledgeService(db,dataDir,new LocalObjectStorage(path.join(dataDir,'objects')),providerFactory,options.llmDisabled);
+ const enrichment=new KnowledgeEnrichmentService(service,{providerFactory});
  const duplicates=new DeduplicationService(db);
  service.onDocumentIndexed=id=>duplicates.detectDocument(id);
  const refinement=new RefinementService(db,service,providerFactory);
@@ -56,12 +60,13 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  });
  const app=Fastify({logger:false,bodyLimit:2*1024*1024});
  app.decorate('knowledge',service);
+ app.decorate('enrichment',enrichment);
  app.decorate('duplicates',duplicates);
  app.decorate('refinement',refinement);
  app.decorate('sourceSync',sources);
  app.decorate('projects',projects);
  app.decorate('documentEngine',documentEngine);
- app.addHook('onClose',async()=>{await documentEngine.close();await sources.close();await refinement.close();await service.close();});
+ app.addHook('onClose',async()=>{await documentEngine.close();await enrichment.close();await sources.close();await refinement.close();await service.close();});
  app.addHook('onRequest',async(request,reply)=>{
   const host=request.hostname.toLowerCase();
   const trusted=new Set(['localhost','127.0.0.1','::1','[::1]',...(process.env.TRUSTED_HOSTS||'').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean)]);
@@ -181,6 +186,8 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  await registerDeduplicationRoutes(app,duplicates);
  await registerProjectRoutes(app,projects);
  await registerDocumentEngineRoutes(app,documentEngine);
+ await registerEnrichmentRoutes(app,service,enrichment);
+ await registerImageRoutes(app,service,projects);
  const dist=fileURLToPath(new URL('../../../dist/',import.meta.url));
  if(existsSync(path.join(dist,'index.html'))) {
   await app.register(fastifyStatic,{root:dist,prefix:'/'});
@@ -190,5 +197,6 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  await refinement.start();
  await sources.start();
  await documentEngine.start();
+ await enrichment.start();
  return app;
 }

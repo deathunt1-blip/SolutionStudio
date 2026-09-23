@@ -40,6 +40,6 @@ describe('Canonical title provenance and existing user priorities',()=>{
   const id=await upload('重启方案.md','# 概述\n\n机器人现场部署技术方案。');await done(id);await knowledge.edit(id,{title:'人工命名重启持久化测试'});
   await app.close();app=await createApp({dataDir:directory,llmDisabled:true});knowledge=(app as any).knowledge;
   const doc=(await app.inject(`/api/documents/${id}`)).json().document;expect(doc.canonicalTitle).toBe('人工命名重启持久化测试');expect(doc.titleSource).toBe('user');
-  expect((await knowledge.db.query('SELECT version FROM schema_migrations ORDER BY version')).map(r=>r.version)).toEqual([1,2,3,4,5,6,7,8]);
+  expect((await knowledge.db.query('SELECT version FROM schema_migrations ORDER BY version')).map(r=>r.version)).toEqual([1,2,3,4,5,6,7,8,9,10,11]);
  },20000);
 });

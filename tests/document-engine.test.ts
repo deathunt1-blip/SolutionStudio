@@ -15,10 +15,10 @@ import {deterministicBlocks} from '../packages/document-engine/src/blocks.js';
 
 describe('document engine workflow, private context and durable jobs',()=>{
  let directory:string,app:Awaited<ReturnType<typeof createApp>>,engine:DocumentEngine,projects:ProjectService;
- let calls=0,failedTitle='',slow:Promise<void>|undefined;const prompts:any[]=[];const providerConfigs:any[]=[];
+ let calls=0,failedTitle='',customerDraft:'clean'|'repairable'|'blocked'='clean',slow:Promise<void>|undefined;const prompts:any[]=[];const providerConfigs:any[]=[];
  beforeAll(async()=>{
   directory=await mkdtemp(path.join(tmpdir(),'studio-docengine-'));
-  app=await createApp({dataDir:directory,providerFactory:config=>{providerConfigs.push(config);return {generate:async request=>{calls++;await slow;const c=JSON.parse(request.prompt);prompts.push(c);if(c.sectionTitle===failedTitle)throw new Error('synthetic section failure');return {content:JSON.stringify({content:[{type:'paragraph',text:'方案围绕已确认的应用需求组织，尚未明确的验收条件待双方确认。'}],used_fact_ids:[],used_knowledge_refs:[],used_asset_refs:[],claims:[]}),usage:{inputTokens:90,outputTokens:40}};}};}});
+  app=await createApp({dataDir:directory,providerFactory:config=>{providerConfigs.push(config);return {generate:async request=>{calls++;await slow;const repairAt=request.prompt.indexOf('\n请修订以下草稿'),c=JSON.parse(repairAt<0?request.prompt:request.prompt.slice(0,repairAt));prompts.push(c);if(c.sectionTitle===failedTitle)throw new Error('synthetic section failure');return {content:JSON.stringify({content:[{type:'paragraph',text:customerDraft==='blocked'||customerDraft==='repairable'&&repairAt<0?'验收指标尚未明确，待确认。':'系统围绕应用需求组织采集、数据处理和实施流程。'}],used_fact_ids:[],used_knowledge_refs:[],used_asset_refs:[],claims:[]}),usage:{inputTokens:90,outputTokens:40}};}};}});
   engine=(app as any).documentEngine;projects=(app as any).projects;
   await (app as any).knowledge.settings.patch({llm:{apiKey:'synthetic-test-key',baseUrl:'https://api.moonshot.cn/v1',model:'kimi-k2.6'}});
  },30000);
@@ -43,7 +43,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
  ] as const)('five scenario acceptance: %s',async(name,description,report)=>{
   const p=await project(name,description,report),doc=await engine.create(p.id);
   const job=await run(doc);expect(job.errors).toEqual([]);expect(job.status).toBe('completed');
-  const result=await engine.get(doc.id);expect(result.sections.every(s=>s.blocks.length>0)).toBe(true);
+  const result=await engine.get(doc.id);expect(result.sections.every((s,index)=>s.blocks.length>0||(result.sections[index+1]?.level??0)>s.level)).toBe(true);
   expect(result.sections.every(s=>(s.contextTokens??0)<=job.config.maxContextTokens)).toBe(true);
   const before=calls,exported=await engine.export(doc.id);expect(calls).toBe(before);expect(exported.buffer.subarray(0,2).toString()).toBe('PK');
   const zip=await JSZip.loadAsync(exported.buffer);expect(await zip.file('word/document.xml')!.async('string')).toContain('TOC');
@@ -59,6 +59,17 @@ describe('document engine workflow, private context and durable jobs',()=>{
   await expect(engine.edit(doc.id,a.id,{revision:current.sections[0].revision,blocks:[]})).rejects.toMatchObject({statusCode:409});
   await run(edited,[b.id]);expect((await engine.get(doc.id)).sections[0].blocks[0]).toMatchObject({text:'用户手工确认的专属内容。'});
   await run(await engine.get(doc.id),[a.id],{overwriteEdited:true});expect((await engine.get(doc.id)).sections[0].edited).toBe(false);
+ });
+ test('customer prose repair is bounded, bills both replies, and rejects an unrepaired internal draft',async()=>{
+  const p=await project('客户正文校验'),doc=await engine.create(p.id),sid=doc.sections[0].id,before=calls;
+  try{
+   customerDraft='repairable';const repaired=await run(doc,[sid]);
+   expect(repaired.status).toBe('completed');expect(calls-before).toBe(2);expect(repaired.inputTokens).toBe(180);expect(repaired.outputTokens).toBe(80);
+   const successful=await engine.get(doc.id);expect(successful.sections[0].blocks).toEqual(expect.arrayContaining([expect.objectContaining({text:'系统围绕应用需求组织采集、数据处理和实施流程。'})]));
+   customerDraft='blocked';const rejected=await run(successful,[sid]);
+   expect(rejected.status).toBe('failed');expect(calls-before).toBe(4);expect(rejected.failed).toBe(1);expect(rejected.errors[0].message).toContain('客户表达检查未通过');
+   expect((await engine.get(doc.id)).sections[0].blocks).toEqual(successful.sections[0].blocks);
+  }finally{customerDraft='clean';}
  });
  test('cover logos only reference this project raster assets and export without model calls',async()=>{
   const a=await project('封面标识甲',undefined,true),b=await project('封面标识乙',undefined,true),doc=await engine.create(a.id);
@@ -122,7 +133,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
   const before=calls;await expect(buildSectionContext(doc.sections[0],context,engine.retriever,engine.structured,4000)).rejects.toMatchObject({statusCode:422});expect(calls).toBe(before);
   context.summary='简述';const sc=await buildSectionContext(doc.sections[0],context,engine.retriever,engine.structured,12000);
   expect(()=>parseGeneration(JSON.stringify({content:[{type:'paragraph',text:'任意断言'}],used_fact_ids:['invented-fact'],used_knowledge_refs:[],used_asset_refs:[],claims:[]}),sc)).toThrow('无效引用');
-  const claim= parseGeneration(JSON.stringify({content:[{type:'paragraph',text:'客户验收口径尚未明确，需在实施前确认。'}],used_fact_ids:[],used_knowledge_refs:[],used_asset_refs:[],claims:[{text:'验收口径待确认',factIds:[],sourceIds:[],kind:'requirement'}]}),sc);expect(claim.blocks).toHaveLength(1);
+  const claim= parseGeneration(JSON.stringify({content:[{type:'paragraph',text:'系统实施包括安装、标定与联调。'}],used_fact_ids:[],used_knowledge_refs:[],used_asset_refs:[],claims:[{text:'系统实施包含安装标定环节',factIds:[],sourceIds:[],kind:'requirement'}]}),sc);expect(claim.blocks).toHaveLength(1);
   const patched=await projects.patchContext(p.id,{revision:context.revision,summary:'项目材料'.repeat(2000)});await projects.confirmContext(p.id,patched.revision);const large=await engine.create(p.id),fixed=large.sections.find(s=>s.generationMode==='fixed')!;
   const fixedJob=await run(large,[fixed.id],{config:{maxContextTokens:4000}});expect(fixedJob.status).toBe('completed');expect(calls).toBe(before);
   await expect(engine.generate(large.id,{expectedRevision:(await engine.get(large.id)).revision,sectionIds:[large.sections[0].id],config:{temperature:.4}})).rejects.toMatchObject({statusCode:400});
@@ -147,7 +158,7 @@ describe('document engine workflow, private context and durable jobs',()=>{
   await projects.confirmContext(p.id,patched.revision);const doc=await engine.create(p.id),equipment=doc.sections.find(s=>s.tableKind==='equipment')!,accuracy=doc.sections.find(s=>s.title==='理论精度分析')!;
   const context=await projects.getContext(p.id),equipmentContext=await buildSectionContext(equipment,context,engine.retriever,engine.structured,32000),accuracyContext=await buildSectionContext(accuracy,context,engine.retriever,engine.structured,32000);
   const countTable=deterministicBlocks(equipment,equipmentContext).find(b=>b.type==='table'),accuracyTable=deterministicBlocks(accuracy,accuracyContext).find(b=>b.type==='table');
-  expect(countTable).toMatchObject({rows:[['K18','32','用户确认']]});if(accuracyTable?.type==='table')expect(accuracyTable.rows.find(r=>r[0].includes('P95'))?.[1]).toBe('0.1mm');else throw new Error('missing engineering table');
+  expect(countTable).toMatchObject({rows:[['K18','32']]});if(accuracyTable?.type==='table')expect(accuracyTable.rows.find(r=>r[0].includes('P95'))?.[1]).toBe('0.1mm');else throw new Error('missing engineering table');
  });
  test('edited and deleted customer requirements never reappear when adding another source',async()=>{
   const p=await project('要求修正'),input=await projects.addText(p.id,{text:'协议：PTP。\n建设目标：动作采集。'}),requirements=structuredClone(input.context.requirements);

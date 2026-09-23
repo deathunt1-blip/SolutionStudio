@@ -67,7 +67,7 @@ describe('typed and source-grounded document fact validation',()=>{
   expect(errors('本项目配置24台K18相机，P95理论误差为0.1mm。',c)).toEqual([]);
   expect(errors('系统已满足客户0.1mm精度要求。',c)).toEqual(expect.arrayContaining([expect.objectContaining({type:'requirement_conflict',sourceRefs:[engineeringSource,userSource]})]));
   expect(errors('系统尚未满足客户要求。',c)).toEqual([]);
-  expect(errors('是否满足客户要求仍待确认。',c)).toEqual([]);
+  expect(errors('是否满足客户要求仍待确认。',c).map(issue=>issue.type)).toEqual(['customer_facing']);
  });
  it('checks manually changed generated table values including units carried by headers',()=>{
   const c=engineering();
@@ -101,7 +101,7 @@ describe('typed and source-grounded document fact validation',()=>{
   for(const ref of [history,standard]){
    expect(errors('本项目K18相机支持120fps，支持PTP同步。',context(),[ref]).filter(issue=>issue.type==='unsupported_claim')).toHaveLength(2);
   }
-  expect(check('建议参考标准开展同步设计，具体实现待确认。',context(),[standard])).toEqual([]);
+  expect(check('建议参考标准开展同步设计，具体实现待确认。',context(),[standard]).map(issue=>issue.type)).toEqual(['customer_facing']);
   const mixedManual=source('K18帧率应为120fps。K18应支持PTP同步。',{type:'knowledge_chunk',label:'K18技术手册',authority:'authoritative'});
   expect(errors('K18帧率120fps，支持PTP同步。',context(),[mixedManual]).filter(issue=>issue.type==='unsupported_claim')).toHaveLength(2);
  });
@@ -267,13 +267,15 @@ describe('typed and source-grounded document fact validation',()=>{
   expect(errors('覆盖率为77.75%。',c)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim'})]));
  });
  it('does not label clearly pending values as established performance',()=>{
-  expect(errors('精度0.05mm待确认。建议配置36台K18相机。帧率200fps尚未确认。是否支持PTP同步待验证。')).toEqual([]);
+  const issues=errors('精度0.05mm待确认。建议配置36台K18相机。帧率200fps尚未确认。是否支持PTP同步待验证。');
+  expect(issues.map(issue=>issue.type)).toEqual(['customer_facing']);
+  expect(issues.some(issue=>['fact_mismatch','unsupported_claim'].includes(issue.type))).toBe(false);
  });
  it('warns about an uncited capability even when the project has unrelated locked facts',()=>{
   const c=context();c.lockedFacts=[fact('deployment.equipmentCount',32,'台','相机数量')];
   expect(check('系统支持水下动作捕捉。',c)).toEqual(expect.arrayContaining([expect.objectContaining({type:'missing_source',severity:'warning',quote:'系统支持水下动作捕捉'})]));
   expect(check('系统支持水下动作捕捉。',c,[source('系统支持水下动作捕捉。')])).toEqual([]);
-  expect(check('是否支持水下动作捕捉待确认。',c)).toEqual([]);
+  expect(check('是否支持水下动作捕捉待确认。',c).map(issue=>issue.type)).toEqual(['customer_facing']);
   expect(check('客户要求支持水下动作捕捉。',c)).toEqual([]);
  });
  it('uses visible rich-text runs and audits unlisted claims, images, missing sections and stale contexts',()=>{

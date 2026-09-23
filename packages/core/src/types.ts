@@ -26,7 +26,7 @@ export interface ClassificationTrace {
 export interface ClassificationOutput { classification:Classification; summary:string; warnings:string[]; usage?: { inputTokens:number; outputTokens:number }; trace?:ClassificationTrace }
 export interface ChunkDraft { order:number; headingPath:string[]; text:string; summary:string; topics:string[]; products:string[]; metadata:Record<string,unknown> }
 export interface KnowledgeChunk extends ChunkDraft { id:string; documentId:string; versionId:string }
-export interface ObjectStorage { put(key:string,data:Uint8Array):Promise<void>; get(key:string):Promise<Uint8Array> }
+export interface ObjectStorage { put(key:string,data:Uint8Array):Promise<void>; get(key:string):Promise<Uint8Array>;delete?(key:string):Promise<void>;replaceCache?(key:string,data:Uint8Array):Promise<void> }
 export interface EmbeddingProvider { embed(texts:string[]):Promise<number[][]> }
 export interface Retriever { search(query:string,filters:Record<string,string>):Promise<unknown[]> }
 export interface DocumentRecord { id:string; title:string; filename:string; status:DocumentStatus; sourceType:string; sourcePath?:string; sourceId:string; activeVersionId:string; versionNumber:number; contentHash:string; summary:string; classification:Classification|null; reviewReasons:string[]; parseStatus:string; parseWarnings:string[]; createdAt:string; updatedAt:string; chunkCount:number; error?:string; scope:string;

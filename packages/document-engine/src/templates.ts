@@ -1,8 +1,8 @@
 import type {DocumentTemplate,DocumentTemplateSection} from './types.js';
-const section=(id:string,title:string,level:number,context:string[],extra:Partial<DocumentTemplateSection>={}):DocumentTemplateSection=>({id,title,level,order:0,generationMode:'ai',requiredContext:context,retrievalPolicy:{query:title,limit:6},generationInstruction:'依据来源编写完整、具体、可交付的中文技术方案，围绕本章解释设计依据、方法、系统关系与适用边界。区分客户目标、理论工程结果和有依据的产品能力；未知参数保留待确认，不编造工程决策。',...extra});
-export const standardTemplate:DocumentTemplate={id:'standard-technical-proposal',name:'标准技术方案 · 光学动作捕捉',version:2,documentType:'technical_proposal',sections:[
+const section=(id:string,title:string,level:number,context:string[],extra:Partial<DocumentTemplateSection>={}):DocumentTemplateSection=>({id,title,level,order:0,generationMode:'ai',requiredContext:context,retrievalPolicy:{query:title,limit:6},generationInstruction:'依据来源编写完整、具体、可交付的中文技术方案，围绕本章解释设计依据、方法、系统关系与适用边界。区分客户目标、理论工程结果和有依据的产品能力；未知数值不写，其他内容围绕功能和设计方法展开，不编造工程决策。',...extra});
+export const standardTemplate:DocumentTemplate={id:'standard-technical-proposal',name:'标准技术方案 · 光学动作捕捉',version:3,documentType:'technical_proposal',sections:[
  section('overview','项目概述',1,['summary','requirements']),
- section('requirements','项目需求理解',1,['requirements'],{generationMode:'fixed',fixedContent:'本章列明项目需求及确认状态，作为方案设计和后续验收依据。'}),
+ section('requirements','项目需求理解',1,['requirements'],{generationMode:'fixed',fixedContent:'本章阐述应用需求与建设目标，明确系统设计的技术方向。'}),
  section('background','应用背景',2,['summary','requirements']),
  section('objectives','建设目标',2,['requirements']),
  section('indicators','关键技术指标',2,['requirements'],{generationMode:'table',tableKind:'requirements'}),

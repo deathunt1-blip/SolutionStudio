@@ -1,3 +1,6 @@
+import {customerFacingIssues} from './customer-facing.js';
+import {highRiskClaimProblems} from './claim-policy.js';
+import {claimEvidenceProblems} from './claim-evidence.js';
 import {randomUUID} from 'node:crypto';
 import type {ProjectContext,RequirementItem,SourceReference} from '../../projects/src/types.js';
 import type {DocumentBlock,DocumentSection,ValidationIssue,SourceRef} from './types.js';
@@ -129,7 +132,7 @@ function productReference(ref:SourceRef):boolean {
  if(ref.authority==='authoritative')return true;
  return ref.authority==='reference'&&/产品|规格|参数|说明|手册|技术文档|技术资料|SDK|接口|manual|datasheet|specification/i.test(ref.label);
 }
-const allowedReference=(ref:SourceRef,isRequirement:boolean)=>ref.authority!=='style_only'&&(isRequirement||!requirementReference(ref)&&productReference(ref));
+const allowedReference=(ref:SourceRef,isRequirement:boolean)=>ref.type!=='knowledge_section'&&ref.use!=='writing_reference'&&ref.authority!=='style_only'&&(isRequirement||!requirementReference(ref)&&productReference(ref));
 function isRequirement(text:string):boolean {
  if(!requirementWording.test(text))return false;
  if(/设计目标/.test(text)&&!/(?:客户|用户)[^，；。]{0,12}(?:要求|需求|目标|期望)|项目[^，；。]{0,12}(?:要求|需求)|需求指标/.test(text))return false;
@@ -178,8 +181,9 @@ function contextEvidence(context:ProjectContext):Evidence[] {
   const ref:SourceRef={type:'structured_fact',id:fact.id,label:`${fact.productKey} ${fact.field}`,evidence:`${fact.productKey} ${fact.field} ${String(fact.value)}${fact.unit??''}`,authority:fact.authority};
   result.push(...textEvidence(ref.evidence,ref,2,false,metricFromLabel(fact.field)));
  }
- for(const [key,item] of Object.entries(context.requirements.performance))if(item)add(key,key,item.value,undefined,requirementSource(item),1,true);
- for(const requirement of allRequirements(context))result.push(...textEvidence(`${requirement.key??''} ${String(requirement.value)} ${requirement.evidence}`,requirementSource(requirement),2,true,metricFromLabel(requirement.key??'')));
+ const acceptedRequirements=allRequirements(context),acceptedRequirementIds=new Set(acceptedRequirements.map(item=>item.id));
+ for(const [key,item] of Object.entries(context.requirements.performance))if(item&&acceptedRequirementIds.has(item.id))add(key,key,item.value,undefined,requirementSource(item),1,true);
+ for(const requirement of acceptedRequirements)result.push(...textEvidence(`${requirement.key??''} ${String(requirement.value)} ${requirement.evidence}`,requirementSource(requirement),2,true,metricFromLabel(requirement.key??'')));
  return result;
 }
 function segments(block:DocumentBlock):string[] {
@@ -228,8 +232,8 @@ function selectedEvidence(claim:Quantity,evidence:Evidence[],requirement:boolean
 }
 function opticalClaimScope(sentence:string,block:DocumentBlock,context:ProjectContext,claim:Quantity,evidence:Evidence[]):OpticalScope|'unclear' {
  if(block.type==='table'){
-  if(/权威产品参数|通用产品|产品规格/.test(block.title))return 'product';
-  if(/报告|仿真/.test(block.title))return 'report';
+  if(/权威产品参数|通用产品|产品规格|产品技术参数/.test(block.title))return 'product';
+  if(/报告|仿真|工程设计光学配置/.test(block.title))return 'report';
  }
  // A simulation input is never evidence of a verified product operating range.
  if(/实测|实证|已验证|已达到|已具备|实际(?:工作|追踪|跟踪|性能|能力|距离)|性能承诺|保证[^。；]{0,20}(?:追踪|跟踪|距离|视场角)/.test(sentence))return 'product';
@@ -251,6 +255,10 @@ export function validateSections(sections:DocumentSection[],context:ProjectConte
   issues.push({id:randomUUID(),sectionId:section.id,blockId,severity,type,message,quote,sourceRefs:[...new Map(sourceRefs.map(ref=>[ref.type+':'+ref.id,ref])).values()]});
  };
  for(const section of sections){
+  issues.push(...customerFacingIssues(section.id,[{id:`${section.id}:title`,type:'heading',level:section.level,text:section.title}],section.sourceRefs).map(issue=>({...issue,blockId:undefined})));
+  issues.push(...customerFacingIssues(section.id,section.blocks,section.sourceRefs));
+  for(const problem of highRiskClaimProblems([{id:`${section.id}:title`,type:'heading',level:section.level,text:section.title},...section.blocks]))add(section,'prohibited_claim',problem.message,problem.quote,[],problem.blockId.endsWith(':title')?undefined:problem.blockId);
+  for(const problem of claimEvidenceProblems(section.claims,context,section.sourceRefs))add(section,'unsupported_claim',problem.message,problem.quote,problem.sourceRefs,section.blocks.find(block=>blockText(block).includes(problem.quote))?.id);
   if(stale)add(section,'stale_context','项目资料或确认事实已更改，此方案保留旧快照，请按最新项目理解新建方案。',undefined);
   if(!section.blocks.length)add(section,'incomplete','章节尚未生成或编辑。',undefined,[],undefined,'warning');
   for(const block of section.blocks){

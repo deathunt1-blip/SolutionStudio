@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { exportDocument } from '../packages/document-engine/src/export.js';
 import { defaultOutputProfile, type DocumentSection, type GeneratedDocument } from '../packages/document-engine/src/types.js';
+import { builtinTheme, resolveTheme } from '../packages/document-engine/src/theme.js';
+import { exportableSections, validateDocumentLayout } from '../packages/document-engine/src/layout-qa.js';
+import { renderMermaidPng } from '../packages/document-engine/src/diagrams.js';
+
+vi.mock('../packages/document-engine/src/diagrams.js', () => ({ renderMermaidPng: vi.fn(async () => png) }));
 
 const png = Buffer.from('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', 'base64');
 const section = (id: string, order: number, level: number, blocks: DocumentSection['blocks'] = []): DocumentSection => ({ id, order, level, title: `章节${id}`, generationMode: 'mixed', requiredContext: [], status: 'edited', blocks, sourceRefs: [], assetRefs: [], lockedFactRefs: [], claims: [], revision: 1, edited: true });
@@ -110,7 +115,7 @@ describe('deterministic native DOCX export', () => {
     expect(xml.match(/<w:tbl>/g)).toHaveLength(2);
     expect(xml).toContain('<w:tblHeader/>');
     expect(xml).toContain('w:vAlign w:val="center"');
-    expect(xml).toContain('w:color="D9D9D9"');
+    expect(xml).toContain('w:color="D9E2DD"');
     expect(xml).not.toContain('w:trHeight');
     expect(xml).toContain('<w:b/><w:bCs/>');
     expect(xml).toContain('&amp; &lt; &gt; &quot;');
@@ -165,5 +170,72 @@ describe('deterministic native DOCX export', () => {
     const xml = await (await unpack(document)).file('word/document.xml')!.async('string');
     for (const value of ['INTERNAL_SOURCE_LABEL', 'INTERNAL_SOURCE_EVIDENCE', 'INTERNAL_CLAIM_REVIEW', 'INTERNAL_VALIDATION_DIAGNOSTIC', 'private-source-id']) expect(xml).not.toContain(value);
     expect(xml).toContain('设备配置');
+  });
+  it('applies the enterprise theme and separates cover/header geometry without inserting a blank body page', async () => {
+    const zip = await unpack(), xml = await zip.file('word/document.xml')!.async('string');
+    const styles = await zip.file('word/styles.xml')!.async('string');
+    const firstSection = xml.slice(0, xml.indexOf('</w:sectPr>'));
+    expect(firstSection).not.toContain('w:headerReference'); expect(firstSection).not.toContain('w:footerReference');
+    expect(firstSection).toContain('w:color="456B5B"'); expect(firstSection).toContain('编制单位');
+    expect(styles).toContain('w:firstLineChars="200"'); expect(styles).toContain('w:jc w:val="both"');
+    expect(styles).toContain('w:line="360"'); expect(styles).toContain('w:sz w:val="27"');
+    expect(styles).toContain('w:ascii="Times New Roman"'); expect(styles).toContain('<w:pageBreakBefore/>');
+    expect(xml).not.toContain('<w:br w:type="page"/>');
+    expect(xml).toContain('w:shd w:fill="EEF4F0"');
+    expect(await zip.file('word/numbering.xml')!.async('string')).toContain('w:numFmt w:val="decimalZero"');
+    expect(await zip.file('word/footer1.xml')!.async('string')).toContain(' NUMPAGES ');
+    expect(xml).not.toContain('<w:pgNumType w:start="1"/>');
+    expect(await zip.file('word/header1.xml')!.async('string')).toContain('机器人动作捕捉系统');
+  });
+  it('emits a compact page-reference TOC at 25, 40 and 60 chapters', async () => {
+    for (const count of [25, 40, 60]) {
+      const document = proposal(); document.sections = Array.from({ length: count }, (_, i) => section(`第${i + 1}章`, i, 1, [{ id: `p${i}`, type: 'paragraph', text: '用于检查长目录与正文分页。' }]));
+      const zip = await unpack(document), xml = await zip.file('word/document.xml')!.async('string');
+      expect(xml.match(/ PAGEREF Section_\d+ \\h /g)).toHaveLength(count);
+      const styles = await zip.file('word/styles.xml')!.async('string');
+      expect(styles).toContain('w:leader="dot"'); expect(styles).toContain('w:line="264"');
+      expect(xml.match(/w:pStyle w:val="Heading1"/g)).toHaveLength(count);
+    }
+  });
+  it('keeps figures with their captions and respects the 90 percent content-width limit', async () => {
+    const xml = await (await unpack()).file('word/document.xml')!.async('string');
+    const paragraphs = xml.match(/<w:p>.*?<\/w:p>/g) || [];
+    for (const [index, paragraph] of paragraphs.entries()) if (paragraph.includes('<w:drawing>')) {
+      expect(paragraph).toContain('<w:keepNext/>');
+      expect(paragraphs[index + 1]).toContain('w:pStyle w:val="Caption"');
+      const width = Number(paragraph.match(/<wp:extent cx="(\d+)"/)?.[1]);
+      expect(width).toBeLessThanOrEqual((210 - 50) * .9 * 36000);
+    }
+  });
+  it('renders saved Mermaid into a document image and keeps source/internal references out of customer text', async () => {
+    const document = proposal(); document.sections[0].blocks.push({ id: 'diagram', type: 'diagram', diagramType: 'mermaid', source: 'flowchart LR\nA[采集] --> B[处理]', caption: '数据处理链路', generatedBy: 'ai', sourceRefs: [{ type: 'user', id: 'secret-ref', label: '内部历史项目名', evidence: '内部证据' }] });
+    document.sections[0].blocks.push({ id: 'note', type: 'callout', kind: '设计说明', text: '采集与处理通过统一数据接口连接。' });
+    const zip = await unpack(document), xml = await zip.file('word/document.xml')!.async('string');
+    expect(renderMermaidPng).toHaveBeenCalledWith('flowchart LR\nA[采集] --> B[处理]');
+    expect(xml).toContain('图2-1 数据处理链路'); expect(xml).toContain('w:pStyle w:val="Callout"');
+    expect(xml).not.toContain('flowchart LR'); expect(xml).not.toContain('内部历史项目名');
+    expect(Object.keys(zip.files).filter(path => path.startsWith('word/media/'))).toHaveLength(2);
+  });
+  it('hides an empty or legacy unanswered technical-indicator section and preserves confirmed indicators', async () => {
+    const document = proposal(), metrics = { ...section('metrics', 11, 2), title: '关键技术指标' }; document.sections.push(metrics);
+    expect(exportableSections(document).some(section => section.id === 'metrics')).toBe(false);
+    metrics.blocks = [{ id: 'explain', type: 'paragraph', text: '以下需求尚待客户确认：' }, { id: 'questions', type: 'list', items: ['尚未明确精度要求', '待客户确认覆盖范围'] }];
+    expect(await (await unpack(document)).file('word/document.xml')!.async('string')).not.toContain('以下需求尚待客户确认');
+    metrics.blocks = [{ id: 'real', type: 'table', title: '关键技术指标', columns: ['参数', '要求'], rows: [['帧率', '≥180 Hz']], sourceRefs: [] }];
+    metrics.blocks.push({ id: 'old-question', type: 'list', items: ['尚未明确精度要求'] });
+    expect(await (await unpack(document)).file('word/document.xml')!.async('string')).toContain('≥180 Hz');
+    expect(await (await unpack(document)).file('word/document.xml')!.async('string')).not.toContain('尚未明确精度要求');
+  });
+  it('validates user theme input and reports layout issues without claiming a rendered-page check', async () => {
+    const theme = resolveTheme({ brandColor: '#345678', fontFamily: '仿宋' });
+    expect(theme.cover.accentColor).toBe('345678'); expect(theme.table.headerFill).not.toBe(builtinTheme.table.headerFill);
+    expect(theme.typography.chineseFont).toBe('仿宋'); expect(builtinTheme.cover.accentColor).toBe('456B5B');
+    expect(() => resolveTheme({ brandColor: 'bad-color' })).toThrow('品牌色'); expect(() => resolveTheme({ themeId: 'unknown' })).toThrow('不存在');
+    const document = proposal(); document.sections[0].blocks.push({ id: 'empty', type: 'heading', text: '' });
+    expect(validateDocumentLayout(document).some(issue => issue.code === 'empty_heading' && issue.severity === 'error')).toBe(true);
+  });
+  it('uses the company local date at a UTC midnight boundary', async () => {
+    const document = proposal(); document.updatedAt = '2026-09-23T23:30:00.000Z';
+    expect(await (await unpack(document)).file('word/document.xml')!.async('string')).toContain('2026年09月24日');
   });
 });
