@@ -178,6 +178,23 @@ describe('typed and source-grounded document fact validation',()=>{
   c.lockedFacts=[fact('performance.p95ErrorMm',.3,'mm','P95')];
   expect(errors('P95理论误差0.3mm。',c)).toEqual([]);
  });
+ it('recognizes explicit report millimeter optical configurations as focal length',()=>{
+  const c=engineering();c.lockedFacts=[fact('engineering.opticsSource','report')];
+  c.engineering!.deployment!.opticalConfigurations=[{model:'K18',lens:{focalLengthMm:8},cameraIds:['camera-1'],sourceRef:engineeringSource}];
+  for(const text of ['采用报告8mm光学配置。','采用报告 8mm 配置。','本次设计使用8mm镜头。'])expect(check(text,c)).toEqual([]);
+  expect(errors('采用报告12mm光学配置。',c)).toEqual(expect.arrayContaining([expect.objectContaining({type:'fact_mismatch',message:expect.stringContaining('镜头焦距'),quote:'12mm'})]));
+  c.lockedFacts.push(fact('project.summary','采用报告8mm光学配置',undefined,'项目摘要'));
+  expect(errors('系统定位精度8mm。',c)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'8mm'})]));
+ });
+ it('binds each same-clause accuracy statistic to its nearest explicit label',()=>{
+  const c=engineering();c.engineering!.performance!.meanErrorMm=.194;c.engineering!.performance!.p90ErrorMm=.386;c.engineering!.performance!.p95ErrorMm=.492;
+  expect(errors('平均理论误差0.194mm、P95理论误差0.492mm。',c)).toEqual([]);
+  expect(errors('P95理论误差0.492mm、平均理论误差0.194mm、P90理论误差0.386mm。',c)).toEqual([]);
+  expect(errors('平均理论误差0.492mm、P95理论误差0.194mm。',c).filter(issue=>issue.type==='fact_mismatch')).toHaveLength(2);
+  expect(errors('平均理论误差0.194mm、定位精度0.492mm。',c)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'0.492mm'})]));
+  const forced=context();forced.lockedFacts=[fact('performance.p95ErrorMm',.3,'mm','平均值口径另行说明')];
+  expect(errors('P95理论误差0.3mm。',forced)).toEqual([]);
+ });
  it('validates engineering optics and original product tables against their own scopes',()=>{
   const c=engineering();c.lockedFacts=[fact('engineering.opticsSource','report')];
   c.engineering!.deployment!.opticalConfigurations=[{model:'K18',variant:'K18_8mm',lens:{focalLengthMm:8},hfovDeg:70,vfovDeg:55,maxWorkingDistanceM:47,cameraIds:['camera-1'],sourceRef:engineeringSource}];

@@ -68,12 +68,14 @@ describe('chapter context quality and optional economy controls',()=>{
  });
  test('report optics stay separate from generic product facts in every prompt and generated parameter table',async()=>{
   const project=context(),sourceRef={type:'engineering_data' as const,id:'report',label:'工程报告'};
-  project.engineering={sourceType:'scenelab',assets:[],sourceRef,deployment:{opticalConfigurations:[{model:'K18',variant:'K18-STD',lens:{focalLengthMm:8},hfovDeg:70,vfovDeg:65,maxWorkingDistanceM:45,cameraIds:['cam-1'],sourceRef}]}};
+  project.engineering={sourceType:'scenelab',assets:[],sourceRef,metadata:{accuracyMetric:'theoretical one-sigma 3D position RMS',coverageUnit:'percent of sampled points'},deployment:{opticalConfigurations:[{model:'K18',variant:'K18-STD',lens:{focalLengthMm:8},hfovDeg:70,vfovDeg:65,maxWorkingDistanceM:45,cameraIds:['cam-1'],sourceRef}]}};
   project.lockedFacts.push({id:'optics-choice',key:'engineering.opticsSource',label:'工程光学配置',value:'report',sourceType:'user',sourceRef:{type:'user',id:'user',label:'明确选择报告配置'},locked:true});
   const productFacts=[{id:'generic-fov',productKey:'K18',field:'产品规格或简称',value:'4608x4096@170fps（50°×46°）/30m',authority:'authoritative'}];
   const service={productFacts:async()=>productFacts} as unknown as StructuredService;
   const built=await buildSectionContext({...section,requiredContext:['requirements'],tableKind:'products'},project,retriever([]).instance,service,40000);
   const prompt=JSON.parse(built.prompt);expect(prompt.engineeringOpticsSource).toBe('report');expect(prompt.simulationOpticalConfigurations[0]).toMatchObject({hfovDeg:70,vfovDeg:65,maxWorkingDistanceM:45});expect(prompt.structuredFacts[0].value).toContain('50°×46°');
+  const analysis=await buildSectionContext({...section,requiredContext:['engineering']},project,retriever([]).instance,service,40000);
+  expect(JSON.parse(analysis.prompt).engineeringFacts.metricDefinitions).toEqual(project.engineering.metadata);
   const tables=deterministicBlocks({...section,tableKind:'products'},built).filter(b=>b.type==='table');
   expect(tables.map(t=>t.title)).toEqual(['工程报告仿真光学配置','通用产品参数（来源原文）']);
   expect(tables[0].rows).toEqual([['K18（K18-STD）','8mm','70°','65°','45m']]);expect(tables[0].sourceRefs[0].type).toBe('engineering_data');
@@ -82,8 +84,8 @@ describe('chapter context quality and optional economy controls',()=>{
  test('missing customer criteria appear as pending questions rather than invented requirements',async()=>{
   const project=context();project.unresolved=[{id:'pending',key:'accuracy',question:'精度验收口径待确认。'},{id:'resolved',key:'old',question:'已处理事项。',resolved:true}];
   const built=await buildSectionContext({...section,tableKind:'requirements'},project,retriever([]).instance,structured,32000);
-  const tables=deterministicBlocks({...section,tableKind:'requirements'},built).filter(b=>b.type==='table');
-  expect(tables.find(t=>t.title==='待确认需求')?.rows).toEqual([['精度验收口径待确认。','待确认']]);
-  expect(tables.find(t=>t.title==='待确认需求')?.sourceRefs).toEqual([]);
+  const blocks=deterministicBlocks({...section,tableKind:'requirements'},built);
+  expect(blocks.find(b=>b.type==='list')).toMatchObject({items:['精度验收口径待确认。']});
+  expect(blocks.some(b=>b.type==='table'&&b.title==='待确认需求')).toBe(false);
  });
 });

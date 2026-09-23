@@ -82,10 +82,14 @@ function quantities(text:string,forced?:Metric):Quantity[] {
   const raw=match[1],unit=match[2],value=Number(raw);
   // A table row can contain focal length, FOV and working distance together.
   // Use the nearest field label for lengths rather than treating every mm as accuracy.
-  const before=text.slice(0,match.index!),nearby=[...before.matchAll(/focalLength|焦距|maxWorkingDistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov|P95|P90|精度|误差|场地尺寸|长度|宽度|高度|边长/gi)].at(-1)?.[0];
-  const lensAfter=/^\s*(?:的)?(?:镜头|焦距)/.test(text.slice(match.index!+match[0].length));
+  const before=text.slice(0,match.index!),after=text.slice(match.index!+match[0].length),nearby=[...before.matchAll(/focalLength|焦距|maxWorkingDistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov|P95|P90|精度|误差|场地尺寸|长度|宽度|高度|边长/gi)].at(-1);
+  const reportLens=/^(?:mm|毫米)$/i.test(unit)&&/报告|仿真/.test(text)&&/^\s*(?:光学|镜头)?配置/.test(after);
+  const lensAfter=/^\s*(?:的)?(?:镜头|焦距)/.test(after)||reportLens;
   const opticalContext=/focalLength|焦距|镜头|maxWorkingDistance|工作距离|追踪|跟踪|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov/i.test(text);
-  const label=forced??(lensAfter?'focalLength':opticalContext&&nearby?metricFromLabel(nearby):metricFromLabel(text));
+  const globalLabel=metricFromLabel(text);
+  const precision=[...before.matchAll(/(?:P(?:95|90)|(?:95|90)(?:百分位|分位))(?:[^、，；。\n\d]{0,12}(?:误差|精度))?|(?:平均|均值)(?:[^、，；。\n\d]{0,12}(?:误差|精度))?|精度|误差|accuracy|meanerror/gi)].at(-1);
+  const nearestPrecision=precision&&/^(?:mm|毫米|cm|厘米|m|米)$/i.test(unit)&&!globalLabel?.startsWith('under')&&(!opticalContext||!nearby||precision.index!+precision[0].length>=nearby.index!+nearby[0].length)?/平均|均值|meanerror/i.test(precision[0])?'mean':metricFromLabel(precision[0]):undefined;
+  const label=forced??(lensAfter?'focalLength':nearestPrecision??(opticalContext&&nearby?metricFromLabel(nearby[0]):globalLabel));
   let metric:Metric,factor=1,canonical=unit;
   if(/^(mm|毫米|cm|厘米|m|米)$/i.test(unit)){
    if(label?.startsWith('under')&&[.3,.5].includes(value))continue;
@@ -101,7 +105,7 @@ function quantities(text:string,forced?:Metric):Quantity[] {
   else {metric='count';canonical='count';}
   const axisLabel=[...before.matchAll(/水平|横向|hfov|垂直|纵向|vfov/gi)].at(-1);
   const axis=metric==='fov'&&axisLabel&&before.length-(axisLabel.index!+axisLabel[0].length)<=12?/水平|横向|hfov/i.test(axisLabel[0])?'horizontal':'vertical':undefined;
-  result.push({metric,value:value*factor,unit:canonical,raw,quote:match[0],factor,model:quantityModel(text,match.index!,match.index!+match[0].length,metric),...(axis?{axis}:{})});
+  result.push({metric,value:value*factor,unit:canonical,raw,quote:match[0],factor,model:quantityModel(text,match.index!,match.index!+match[0].length,metric),...(axis?{axis}:{}),...(reportLens&&metric==='focalLength'?{scope:'report' as const}:{})});
  }
  return result;
 }
@@ -136,7 +140,7 @@ function textEvidence(text:string,source:SourceRef,priority:number,requirement:b
  const sourceModel=singleModel(source.label+' '+text);
  return text.split(/[。！？\n，；]+/).flatMap(sentence=>{
    if(!requirement&&(uncertain.test(sentence)||negative.test(sentence)||normative.test(sentence)||isRequirement(sentence)))return [];
-  return quantities(sentence,forced).filter(value=>value.metric!=='accuracy'||forced==='accuracy'||/精度|误差|accuracy|error/i.test(sentence)).map(value=>({...value,model:value.model??sourceModel,...(opticalMetric(value.metric)?{scope:source.type==='engineering_data'?'report' as const:'product' as const}:{}),source,priority,requirement}));
+  return quantities(sentence,forced).filter(value=>value.metric!=='accuracy'||forced==='accuracy'||/精度|误差|accuracy|error/i.test(sentence)).map(value=>({...value,model:value.model??sourceModel,...(opticalMetric(value.metric)?{scope:value.scope??(source.type==='engineering_data'?'report' as const:'product' as const)}:{}),source,priority,requirement}));
  });
 }
 function contextEvidence(context:ProjectContext):Evidence[] {
@@ -229,7 +233,7 @@ function opticalClaimScope(sentence:string,block:DocumentBlock,context:ProjectCo
  }
  // A simulation input is never evidence of a verified product operating range.
  if(/实测|实证|已验证|已达到|已具备|实际(?:工作|追踪|跟踪|性能|能力|距离)|性能承诺|保证[^。；]{0,20}(?:追踪|跟踪|距离|视场角)/.test(sentence))return 'product';
- const report=/仿真|SceneLab|报告(?:中|配置|光学|参数|给出|采用|输入|的)|工程报告|理论光学/i.test(sentence);
+ const report=/仿真|SceneLab|报告(?:中|配置|光学|参数|给出|采用|输入|的)|报告\s*\d+(?:\.\d+)?\s*(?:mm|毫米)\s*(?:光学|镜头)?配置|工程报告|理论光学/i.test(sentence);
  const product=/通用产品|产品(?:参数|规格|标称|手册|能力|追踪|跟踪|工作距离)|标称|出厂|规格书/.test(sentence);
  if(report&&product)return 'unclear';if(report)return 'report';if(product)return 'product';
  const selectedReport=context.lockedFacts.some(fact=>fact.key==='engineering.opticsSource'&&fact.value==='report');

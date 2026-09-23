@@ -28,7 +28,8 @@ export function deterministicBlocks(section:DocumentSection,sc:SectionContext):D
  const table=(title:string,columns:string[],rows:string[][],sourceRefs:SourceRef[])=>{if(rows.length)out.push({id:randomUUID(),type:'table',title,columns,rows,sourceRefs,generated:true});};
  if(section.tableKind==='requirements'){
   table('客户要求与确认状态',['指标 / 要求','内容','状态'],allRequirements(c).map(r=>[r.key??'项目要求',String(r.value),r.confirmedByUser?'已确认要求':'待确认要求']),allRequirements(c).map(r=>({type:'project_input',id:r.sourceChunkId??r.sourceInputId,label:r.key??'要求',evidence:r.evidence})));
-  table('待确认需求',['需确认的内容','状态'],c.unresolved.filter(q=>!q.resolved).map(q=>[q.question,'待确认']),[]);
+  const pending=c.unresolved.filter(q=>!q.resolved);
+  if(pending.length)out.push({id:randomUUID(),type:'paragraph',text:'以下需求尚待客户确认：'},{id:randomUUID(),type:'list',items:pending.map(q=>q.question),ordered:false});
  }
   if(section.tableKind==='equipment')table('已确认设备配置',['设备型号','数量（台）','配置依据'],(engineering?.deployment?.models??[]).map(m=>[m.name,String(m.count),c.lockedFacts.some(f=>f.sourceType==='user'&&f.key.startsWith('deployment.'))?'用户确认':'工程设计数据']),engineering?[asSource(engineering.sourceRef),...c.lockedFacts.filter(f=>f.sourceType==='user'&&f.key.startsWith('deployment.')).map(f=>asSource(f.sourceRef))]:[]);
  if(section.tableKind==='products'){

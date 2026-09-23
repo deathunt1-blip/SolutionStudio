@@ -73,7 +73,7 @@ export async function buildSectionContext(section:DocumentSection,context:Projec
  const base={sectionTitle:section.title,instruction:section.generationInstruction,mode:extra.mode??'regenerate',projectSummary:context.summary,selectedProducts:context.products,
   customerRequirements:required.map(r=>({id:r.id,key:r.key,value:r.value,evidence:r.evidence,sourceId:r.sourceChunkId??r.sourceInputId})),
   lockedFacts:context.lockedFacts.map(f=>({id:f.id,key:f.key,label:f.label,value:f.value,unit:f.unit,sourceType:f.sourceType,sourceId:f.sourceRef.id})),
-  engineeringFacts:section.requiredContext.includes('engineering')?{scene:engineering?.scene,deployment:engineering?.deployment,performance:engineering?.performance}:undefined,
+  engineeringFacts:section.requiredContext.includes('engineering')?{scene:engineering?.scene,deployment:engineering?.deployment,performance:engineering?.performance,metricDefinitions:{accuracyMetric:engineering?.metadata?.accuracyMetric,coverageUnit:engineering?.metadata?.coverageUnit}}:undefined,
   simulationOpticalConfigurations:engineering?.deployment?.opticalConfigurations??[],engineeringOpticsSource:context.lockedFacts.find(f=>f.key==='engineering.opticsSource')?.value??'unconfirmed',
   structuredFacts:facts.map(f=>({id:f.id,productKey:f.productKey,field:f.field,value:f.value,unit:f.unit})),
   conflicts:context.conflicts.map(c=>({message:c.message,status:c.status})),unresolved:context.unresolved.filter(q=>!q.resolved).map(q=>q.question),
