@@ -33,3 +33,4 @@ export interface DocumentRecord { id:string; title:string; filename:string; stat
  canonicalTitle?:string; originalFilename?:string; parsedTitle?:string; titleSource?:'filename'|'parser'|'ai'|'user';titleConfidence?:number|null;titleReasoning?:string|null;titleLocked?:boolean;extractiveSummary?:string;aiSummary?:string|null;summarySource?:'extractive'|'ai'|'user';knowledgeGroups?:{id:string;name:string}[];
 }
 export interface Settings { autoAcceptThreshold:number; reviewThreshold:number; chunkTargetTokens:number; chunkOverlapTokens:number; llm:Omit<LLMConfig,'apiKey'> & { configured:boolean }; sources: {id:string;type:string;name:string;mode:string;status:string}[] }
+export interface DocumentRecord { sourceUri?:string;remoteVersion?:string;remoteModifiedAt?:string;sourceMetadata?:Record<string,unknown> }

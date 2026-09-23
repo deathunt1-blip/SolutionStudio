@@ -14,22 +14,40 @@ import { KimiProvider } from '../../../packages/llm/src/index.js';
 import type { Registries, LLMConfig, LLMProvider } from '../../../packages/core/src/types.js';
 import { RefinementService } from '../../../packages/refinement/src/service.js';
 import { registerRefinementRoutes } from './refinement-routes.js';
+import { LocalSecretStore, type SecretStore } from '../../../packages/connections/src/secrets.js';
+import { ConnectionService, type AdapterFactory } from '../../../packages/connections/src/service.js';
+import { SourceSyncService } from '../../../packages/sources/src/service.js';
+import { StructuredService } from '../../../packages/structured/src/service.js';
+import { FeishuSourceAdapter } from '../../../packages/source-adapters/src/feishu/index.js';
+import { registerSourceRoutes } from './source-routes.js';
+import { decryptDocument } from '../../../packages/documents/src/decrypt.js';
 
 const params = (request: any) => request.params as Record<string,string>;
 const query = (request: any) => Object.fromEntries(Object.entries(request.query || {}).filter(([,v])=>typeof v==='string')) as Record<string,string>;
 const body = (request:any) => {if(!request.body || typeof request.body!=='object' || Array.isArray(request.body)) throw new HttpError(400,'请求内容应为 JSON 对象');return request.body as Record<string,unknown>;};
 const pagination=(q:Record<string,string>)=>({page:Math.max(1,Math.min(100000,Number.parseInt(q.page)||1)),pageSize:Math.max(1,Math.min(100,Number.parseInt(q.pageSize)||30))});
 
-export async function createApp(options:{dataDir?:string;databaseUrl?:string;llmDisabled?:boolean;providerFactory?:(config:LLMConfig)=>LLMProvider}={}) {
+export async function createApp(options:{dataDir?:string;databaseUrl?:string;llmDisabled?:boolean;providerFactory?:(config:LLMConfig)=>LLMProvider;secretStore?:SecretStore;adapterFactory?:AdapterFactory}={}) {
  const dataDir=path.resolve(options.dataDir || process.env.DATA_DIR || 'data');
  const db=await openDatabase(dataDir,options.databaseUrl ?? process.env.DATABASE_URL);
  const providerFactory=options.providerFactory??((config:LLMConfig)=>new KimiProvider(config));
  const service=new KnowledgeService(db,dataDir,new LocalObjectStorage(path.join(dataDir,'objects')),providerFactory,options.llmDisabled);
  const refinement=new RefinementService(db,service,providerFactory);
+ const structured=new StructuredService(db);
+ const secretStore=options.secretStore??new LocalSecretStore(dataDir);
+ const connections=new ConnectionService(db,secretStore,options.adapterFactory??((provider,credentials)=>{if(provider!=='feishu')throw new HttpError(400,'连接提供方不受支持');return new FeishuSourceAdapter(credentials);}));
+ const sources=new SourceSyncService(db,service,connections,structured,async file=>{
+  const reference=process.env.SOURCE_DOCUMENT_PASSWORD_REF;
+  if(!reference||!(/\.(?:pdf|docx|xlsx|pptx)$/i.test(file.meta.filename)))return file;
+  const decrypted=await decryptDocument(file,await secretStore.get(reference));
+  if(decrypted!==file){const originalObjectKey=`originals/${file.contentHash.slice(0,2)}/${file.contentHash}`;await service.storage.put(originalObjectKey,file.buffer);decrypted.meta.metadata={...decrypted.meta.metadata,originalObjectKey};}
+  return decrypted;
+ });
  const app=Fastify({logger:false,bodyLimit:2*1024*1024});
  app.decorate('knowledge',service);
  app.decorate('refinement',refinement);
- app.addHook('onClose',async()=>{await refinement.close();await service.close();});
+ app.decorate('sourceSync',sources);
+ app.addHook('onClose',async()=>{await sources.close();await refinement.close();await service.close();});
  app.addHook('onRequest',async(request,reply)=>{
   const host=request.hostname.toLowerCase();
   const trusted=new Set(['localhost','127.0.0.1','::1','[::1]',...(process.env.TRUSTED_HOSTS||'').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean)]);
@@ -46,7 +64,7 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  });
  app.setErrorHandler((error:any,_request,reply)=>{
   const status=Number(error.statusCode)||500;
-  reply.code(status>=400&&status<600?status:500).send({message:status<500 ? service.settings.redact(String(error.message||'请求无效')) : '服务器处理失败，请稍后重试'});
+  reply.code(status>=400&&status<600?status:500).send({message:status<500 ? connections.redact(service.settings.redact(String(error.message||'请求无效'))) : '服务器处理失败，请稍后重试'});
  });
  await app.register(multipart,{limits:{files:100,fileSize:80*1024*1024,fields:10,parts:110}});
  app.get('/api/health',async()=>({status:'ok',database:db.kind}));
@@ -99,7 +117,7 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  app.get('/api/documents/:id',async request=>{
   const document=await getDocument(db,params(request).id);if(!document)throw new HttpError(404,'资料不存在');
   const chunks=await db.query('SELECT * FROM knowledge_chunks WHERE version_id=$1 ORDER BY chunk_order',[document.activeVersionId]);
-  const versions=await db.query('SELECT id,version_number AS "versionNumber",status,created_at AS "createdAt",content_hash AS "contentHash" FROM document_versions WHERE document_id=$1 ORDER BY version_number DESC',[document.id]);
+  const versions=await db.query('SELECT id,version_number AS "versionNumber",status,created_at AS "createdAt",content_hash AS "contentHash",source_metadata AS "sourceMetadata" FROM document_versions WHERE document_id=$1 ORDER BY version_number DESC',[document.id]);
   const audit=await db.query('SELECT id,action,modified_by AS "modifiedBy",modified_at AS "modifiedAt",previous_value AS "previousValue",next_value AS "nextValue" FROM audit_events WHERE document_id=$1 ORDER BY modified_at DESC LIMIT 100',[document.id]);
   const parsed=await db.query('SELECT parsed_document FROM document_versions WHERE id=$1',[document.activeVersionId]);
   return {document,chunks:chunks.map(chunkRecord),versions,audit,parsed:parsed[0]?.parsed_document||null};
@@ -108,7 +126,9 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
   const doc=await getDocument(db,params(request).id);if(!doc)throw new HttpError(404,'资料不存在');
   const rows=await db.query('SELECT * FROM document_versions WHERE document_id=$1 AND id=$2',[doc.id,query(request).versionId||doc.activeVersionId]);
   if(!rows[0])throw new HttpError(404,'版本不存在');
-  const data=await service.storage.get(rows[0].object_key);
+  const sourceOriginal=query(request).sourceOriginal==='1';
+  const originalObjectKey=rows[0].source_metadata?.originalObjectKey;
+  const data=await service.storage.get(sourceOriginal&&typeof originalObjectKey==='string'?originalObjectKey:rows[0].object_key);
   reply.header('Content-Disposition',`attachment; filename="download${path.extname(rows[0].filename).replace(/[^.a-zA-Z0-9]/g,'')}"; filename*=UTF-8''${encodeURIComponent(rows[0].filename)}`);
   reply.header('X-Content-Type-Options','nosniff');return reply.type('application/octet-stream').send(Buffer.from(data));
  });
@@ -146,6 +166,7 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  });
  app.get('/api/jobs',async()=>({items:await db.query(`SELECT j.id,j.document_id AS "documentId",v.filename,j.status,j.error,j.created_at AS "createdAt",j.updated_at AS "updatedAt" FROM ingestion_jobs j JOIN documents d ON d.id=j.document_id JOIN document_versions v ON v.id=j.version_id WHERE ${scoped} ORDER BY j.created_at DESC LIMIT 200`)}));
  await registerRefinementRoutes(app,service,refinement);
+ await registerSourceRoutes(app,connections,sources,structured,service,providerFactory);
  const dist=fileURLToPath(new URL('../../../dist/',import.meta.url));
  if(existsSync(path.join(dist,'index.html'))) {
   await app.register(fastifyStatic,{root:dist,prefix:'/'});
@@ -153,5 +174,6 @@ export async function createApp(options:{dataDir?:string;databaseUrl?:string;llm
  }
  await service.start();
  await refinement.start();
+ await sources.start();
  return app;
 }

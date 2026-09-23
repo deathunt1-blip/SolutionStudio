@@ -1,0 +1,33 @@
+import type {FastifyInstance} from 'fastify';
+import {z} from 'zod';
+import {HttpError,type KnowledgeService} from '../../../packages/knowledge/src/service.js';
+import type {ConnectionService} from '../../../packages/connections/src/service.js';
+import type {SourceSyncService} from '../../../packages/sources/src/service.js';
+import {StructuredError,type StructuredService} from '../../../packages/structured/src/service.js';
+import {parseFeishuUrl} from '../../../packages/source-adapters/src/feishu/index.js';
+import type {LLMConfig,LLMProvider} from '../../../packages/core/src/types.js';
+const string=z.string().trim().min(1).max(300),root=z.string().trim().url().max(2000);
+const hint=z.enum(['none','reference','authoritative']);
+const parsed=<T>(schema:z.ZodType<T>,value:unknown):T=>{const result=schema.safeParse(value);if(!result.success)throw new HttpError(400,'请求参数无效，请检查填写内容');return result.data;};
+const config=(url:string)=>{try{const p=parseFeishuUrl(url);return {rootUrl:p.url,mode:p.type==='sheet'?'sheet' as const:'wiki' as const};}catch(e){throw new HttpError(400,e instanceof Error?e.message:'飞书链接无效');}};
+const structuredCall=async<T>(action:()=>Promise<T>)=>{try{return await action();}catch(error){if(error instanceof StructuredError)throw new HttpError(error.code==='not_found'?404:400,error.message);throw error;}};
+export async function registerSourceRoutes(app:FastifyInstance,connections:ConnectionService,sources:SourceSyncService,structured:StructuredService,knowledge:KnowledgeService,providerFactory:(config:LLMConfig)=>LLMProvider){
+ const id=(request:any)=>String(request.params.id);
+ app.get('/api/connections',async()=>({items:await connections.list()}));
+ app.post('/api/connections',async request=>({connection:await connections.create(parsed(z.object({name:string,appId:string,appSecret:z.string().min(8).max(1000)}).strict(),request.body))}));
+ app.patch('/api/connections/:id',async request=>({connection:await connections.update(id(request),parsed(z.object({name:string.optional(),appId:string.optional(),appSecret:z.string().min(8).max(1000).optional(),status:z.enum(['connected','disabled']).optional()}).strict(),request.body))}));
+ app.post('/api/connections/:id/test',async request=>{const input=parsed(z.object({rootUrl:root}).strict(),request.body);return connections.test(id(request),config(input.rootUrl));});
+ app.get('/api/sources',async()=>({items:await sources.list()}));
+ app.post('/api/sources',async request=>{const input=parsed(z.object({name:string,connectionId:string,rootUrl:root,recursive:z.boolean().optional(),authorityHint:hint.optional()}).strict(),request.body);return {source:await sources.create({...input,...config(input.rootUrl)})};});
+ app.patch('/api/sources/:id',async request=>{const input=parsed(z.object({name:string.optional(),rootUrl:root.optional(),recursive:z.boolean().optional(),authorityHint:hint.optional(),status:z.enum(['ready','disabled']).optional()}).strict(),request.body);return {source:await sources.update(id(request),{...input,...(input.rootUrl?config(input.rootUrl):{})})};});
+ app.post('/api/sources/:id/sync',async(request,reply)=>{const input=parsed(z.object({retryFailed:z.boolean().optional()}).strict(),request.body||{});return reply.code(202).send({job:await sources.enqueue(id(request),input.retryFailed)});});
+ app.get('/api/sources/:id/jobs',async request=>{await sources.get(id(request));return {items:await sources.jobs(id(request))};});
+ app.get('/api/sources/:id/resources',async request=>({items:await sources.resources(id(request))}));
+ app.get('/api/datasets',async()=>({items:await structured.list()}));
+ app.get('/api/datasets/:id',async request=>({dataset:await structuredCall(()=>structured.get(id(request)))}));
+ app.post('/api/datasets/:id/preview',async request=>{const input=parsed(z.object({headerRow:z.number().int().min(1).max(100000)}).strict(),request.body);return structuredCall(()=>structured.preview(id(request),input.headerRow));});
+ const field=z.object({key:string,sourceHeader:z.string().max(500),canonicalName:z.string().trim().min(1).max(200).optional(),semanticType:z.enum(['identifier','name','number','text','enum','url','date','unknown']),unit:z.string().max(100).optional(),confidence:z.number().min(0).max(1).optional()}).strict();
+ app.post('/api/datasets/:id/mapping',async request=>{const input=parsed(z.object({headerRow:z.number().int().min(1).max(100000),productKey:string.optional(),productName:string.optional(),isProductTable:z.boolean(),authority:z.enum(['reference','authoritative']),fields:z.array(field).min(1).max(1000),title:z.string().trim().min(1).max(300).optional(),summary:z.string().max(3000).optional()}).strict(),request.body);const {title,summary,...mapping}=input;return {dataset:await structuredCall(()=>structured.confirmMapping(id(request),mapping,{title,summary}))};});
+ app.post('/api/datasets/:id/suggest',async request=>{const input=parsed(z.object({useAi:z.boolean().optional()}).strict(),request.body||{});let provider:LLMProvider|undefined;if(input.useAi){const settings=await knowledge.settings.config();if(!settings)throw new HttpError(400,'请先配置 Kimi');if(settings.baseUrl!=='https://api.moonshot.cn/v1'||settings.model!=='kimi-k2.6'||settings.maxTokens>3000)throw new HttpError(400,'结构化建议暂支持 Kimi 中国区 kimi-k2.6，输出上限3000');provider=providerFactory(settings);}return structuredCall(async()=>structured.suggestMapping(await structured.sourceData(id(request)),provider));});
+ app.get('/api/facts',async request=>{const q=parsed(z.object({q:z.string().max(500).optional()}).strict(),request.query||{});return {items:await structured.searchFacts(q.q||'')};});
+}

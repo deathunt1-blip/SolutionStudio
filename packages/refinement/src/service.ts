@@ -46,7 +46,7 @@ export class RefinementService {
   this.timer=setInterval(()=>this.wake(),500);this.timer.unref();this.wake();
  }
  async close(){this.stopping=true;clearInterval(this.timer);await this.current;}
- wake(){if(this.stopping||this.current)return;this.current=this.drain().finally(()=>{this.current=undefined;}).catch(()=>{/* per-job errors are persisted */});}
+  wake(){if(this.stopping||this.current)return;this.current=Promise.allSettled([this.drain(),this.drain()]).then(()=>{/* each worker claims jobs in a transaction */}).finally(()=>{this.current=undefined;});}
  private async provider(){
   const config=await this.knowledge.settings.config();
   if(!config)throw new HttpError(400,'请先在设置中配置 Kimi API');

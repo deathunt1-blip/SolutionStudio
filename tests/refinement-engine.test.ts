@@ -81,6 +81,24 @@ describe('unified refinement and current-file grounding',()=>{
   const original=input({operations:['title']});const snapshot=structuredClone(original),provider=model(goodAnswer());
   expect((await refineDocument(original,provider)).suggestions.map(item=>item.field)).toEqual(['title']);expect(original).toEqual(snapshot);expect(provider.generate).toHaveBeenCalledTimes(1);
  });
+ it('requests only a concise canonical_title object for title-only work, leaving combined requests unchanged',async()=>{
+  const titleProvider=model({canonical_title:goodAnswer().canonical_title});const result=await refineDocument(input({operations:['title']}),titleProvider);
+  const titleRequest=titleProvider.generate.mock.calls[0]![0],instructions=JSON.parse(titleRequest.prompt).instructions as string;
+  expect(Object.keys(JSON.parse(instructions.match(/\{.*\}/)![0]))).toEqual(['canonical_title']);
+  expect(instructions).not.toContain('一次返回全部可判断字段');expect(instructions).toContain('evidence最多3条');expect(instructions).toContain('每条最多160字符');
+  for(const field of ['summary','document_type','authority','applications','topics','products'])expect(instructions).not.toContain(`"${field}"`);
+  expect(instructions).toContain('连续逐字引用当前文件名/解析标题/正文');expect(instructions).toContain('泛化章节名');expect(titleRequest.system).toContain('不得虚构客户');
+  expect(result.suggestions.map(value=>value.field)).toEqual(['title']);expect(result.promptBytes).toBeLessThanOrEqual(MAX_PROMPT_BYTES);
+  const combinedProvider=model(goodAnswer());await refineDocument(input({operations:['title','summary']}),combinedProvider);
+  const combined=JSON.parse(combinedProvider.generate.mock.calls[0]![0].prompt).instructions as string;
+  expect(combined).toContain('一次返回全部可判断字段');expect(Object.keys(JSON.parse(combined.match(/\{.*\}/)![0]))).toHaveLength(7);
+ });
+ it('retains current-file grounding and generic-title rejection for title-only requests',async()=>{
+  for(const title of ['概述','一、技术方案','腾讯机器人相机建设方案']){
+   const result=await refineDocument(input({operations:['title']}),model({canonical_title:proposal(title,'机器人相机建设方案')}));
+   expect(result.suggestions,title).toEqual([]);expect(result.warnings.join('')).toContain('标题');
+  }
+ });
  it('fails closed with usage for malformed output and does not expose provider credentials',async()=>{
   const malformed=model({canonical_title:{value:'标题',confidence:99}});const result=await refineDocument(input(),malformed);
   expect(result.suggestions).toEqual([]);expect(result.usage?.inputTokens).toBe(100);expect(result.warnings.join('')).toContain('结构');

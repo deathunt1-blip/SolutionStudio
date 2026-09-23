@@ -1,7 +1,9 @@
-# Feishu connector extension point (P0.5)
+# Feishu read-only source adapter
 
-The runnable P0 only enables manual ingestion. `MockFeishuAdapter` is an explicit test fixture, not a live connection.
+`FeishuSourceAdapter` implements the provider-neutral `RemoteSourceAdapter` contract. It discovers an explicitly selected Wiki subtree or spreadsheet; documents leave this boundary as `SourceFile`, and sheets as structured rows with real row positions. Knowledge Core has no dependency on Feishu APIs.
 
-A future live adapter implements `KnowledgeSourceAdapter`. Require explicit folder allowlists and tenant credentials; never enumerate the whole organization. Map file token to `sourceId`, remote revision to `version`, path and modified time to metadata. Export native Docs/Sheets to a supported file format at the connector boundary. Ingestion remains unchanged.
+Import the adapter and URL parser from `index.ts`. Credentials belong in the server-side secret store. Constructor transport overrides exist only for local Mock HTTP Server tests and must not come from source configuration. Real requests use the fixed official Open API host.
 
-The sync coordinator compares `(source, sourceDocumentId, version, contentHash)`: ingest new, create a version on change, skip unchanged and mark removed items archived only after a successful complete listing. Preserve every original locally. Connector credentials belong in deployment secret storage. Remote deletion must never delete originals or history.
+Use `SourceListing.complete` before removal detection. Use authoritative Docx revisions for fast unchanged checks; legacy native exports expose `meta.metadata.contentFingerprint` to ignore volatile ZIP metadata. `SourceFile.contentHash` always hashes original bytes. Preserve originals and history when a remote resource disappears.
+
+See [setup and protocol references](../../../../docs/FEISHU_SETUP.md) and `tests/feishu-adapter.test.ts`.

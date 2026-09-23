@@ -8,7 +8,7 @@ export interface Stats { total: number; active: number; needsReview: number; fai
 export type Notify = (message: string, kind?: 'success' | 'error') => void;
 export const authorities: Record<Authority, string> = { authoritative: '正式权威', reference: '历史参考', style_only: '写作参考', unknown: '待判断' };
 export const statusLabels: Record<DocumentStatus, string> = { discovered: '已发现', uploaded: '排队中', parsing: '解析中', parsed: '已解析', classifying: '分类中', needs_review: '待确认', indexing: '建立索引', active: '已入库', superseded: '历史版本', archived: '已归档', failed: '处理失败' };
-export const sourceLabels: Record<string, string> = { manual: '手动上传', manual_upload: '手动上传', upload: '手动上传', local_folder: '本地目录', local: '本地目录', feishu: '飞书', mock_feishu: '飞书演示' };
+export const sourceLabels: Record<string, string> = { manual: '手动上传', manual_upload: '手动上传', upload: '手动上传', local_folder: '本地目录', local: '本地目录', feishu: '飞书', feishu_wiki: '飞书知识库', feishu_sheet: '飞书表格', mock_feishu: '飞书演示' };
 export const fieldSources: Record<string, string> = { ai: '模型识别', rule: '规则识别', user: '人工确认', metadata: '文件信息' };
 export const processingStatuses = ['discovered', 'uploaded', 'parsing', 'parsed', 'classifying', 'indexing'];
 export const supportedFiles = '.docx,.pdf,.xlsx,.xls,.csv,.md,.txt,.png,.jpg,.jpeg';

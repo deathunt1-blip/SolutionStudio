@@ -25,24 +25,41 @@ export class KnowledgeService {
  }
  wake() {
   if(this.stopping || this.current) return;
-  this.current=this.drain().catch(()=>{/* persisted job failures are handled per document */}).finally(()=>{this.current=undefined;});
+  // Jobs are claimed atomically. Two workers overlap remote classification without
+  // opening another embedded database or duplicating a model request for a job.
+  this.current=Promise.allSettled([this.drain(),this.drain()]).then(()=>{/* job failures are persisted per document */}).finally(()=>{this.current=undefined;});
  }
  async close() {this.stopping=true;clearInterval(this.timer);await this.current;await this.db.close();}
- async upload(file:SourceFile,options:{duplicate:'skip'|'keep';sourceId?:string;documentId?:string}) {
+ async upload(file:SourceFile,options:{duplicate:'skip'|'keep';sourceId?:string;documentId?:string;sourceDocumentId?:string}) {
   const sourceId=options.sourceId || 'manual';
   const key=`originals/${file.contentHash.slice(0,2)}/${file.contentHash}`;
   // Originals are written before committing metadata; a committed job always has bytes.
   await this.storage.put(key,file.buffer);
   const result=await this.db.transaction(async tx=>{
-   if(options.duplicate!=='keep') {
+   let doc: any;
+   // Source identity survives a crash between document ingestion and the connector's resource-map write.
+   // Manual "keep another copy" uploads do not provide sourceDocumentId and retain their existing behavior.
+   if(options.sourceDocumentId&&!options.documentId){
+    doc=(await tx.query(`SELECT d.*,sd.source_path AS identity_source_path,sd.source_uri AS identity_source_uri,
+     v.content_hash AS identity_content_hash,v.filename AS identity_filename,v.source_metadata AS identity_metadata
+     FROM documents d JOIN source_documents sd ON sd.id=d.source_document_id LEFT JOIN document_versions v ON v.id=d.active_version_id
+     WHERE ${scoped} AND sd.source_id=$1 AND sd.source_document_id=$2 ORDER BY d.updated_at DESC,d.id LIMIT 1`,[sourceId,options.sourceDocumentId]))[0];
+    const fingerprint=file.meta.metadata?.contentFingerprint;
+    const sameContent=doc&&(doc.identity_content_hash===file.contentHash||typeof fingerprint==='string'&&fingerprint.length>0&&doc.identity_metadata?.contentFingerprint===fingerprint);
+    const sameLocation=doc&&doc.identity_filename===file.meta.filename&&(doc.identity_source_path??null)===(file.meta.sourcePath||null)&&(doc.identity_source_uri??null)===(file.meta.sourceUri||null);
+    if(sameContent&&sameLocation&&doc.status!=='failed'&&doc.status!=='archived'){
+     await tx.query('UPDATE source_documents SET remote_version=$1,modified_at=$2,removed_from_source=false WHERE id=$3',[file.meta.version||null,file.meta.modifiedAt||null,doc.source_document_id]);
+     return {filename:file.meta.filename,status:'duplicate' as const,documentId:doc.id,message:'来源内容已入库，已复用当前版本和处理任务'};
+    }
+   }
+   if(options.duplicate!=='keep'&&!options.sourceDocumentId) {
     const existing=await tx.query(`SELECT d.id FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE ${scoped} AND v.content_hash=$1 LIMIT 1`,[file.contentHash]);
     if(existing[0]) return {filename:file.meta.filename,status:'duplicate' as const,documentId:existing[0].id,message:'该文件已存在，已跳过相同内容'};
    }
-   let doc: any;
    if(options.documentId) {
     const found=await tx.query(`SELECT d.* FROM documents d WHERE ${scoped} AND d.id=$1`,[options.documentId]);
     if(!found[0]) throw new HttpError(404,'资料不存在'); doc=found[0];
-   } else if(file.meta.sourcePath && options.duplicate!=='keep') {
+   } else if(!doc&&file.meta.sourcePath && options.duplicate!=='keep') {
     const found=await tx.query(`SELECT d.* FROM documents d JOIN source_documents sd ON sd.id=d.source_document_id WHERE ${scoped} AND sd.source_id=$1 AND sd.source_document_id=$2 ORDER BY d.created_at DESC LIMIT 1`,[sourceId,file.meta.sourcePath]);
     doc=found[0];
    }
@@ -51,7 +68,7 @@ export class KnowledgeService {
    const documentId=doc?.id || randomUUID(); const versionId=randomUUID();
    if(!doc) {
     const sourceDocumentId=randomUUID();
-    await tx.query('INSERT INTO source_documents(id,source_id,source_document_id,source_path,source_uri,remote_version,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',[sourceDocumentId,sourceId,file.meta.sourcePath || file.meta.filename,file.meta.sourcePath || null,file.meta.sourceUri || null,file.meta.version || null,file.contentHash]);
+    await tx.query('INSERT INTO source_documents(id,source_id,source_document_id,source_path,source_uri,remote_version,content_hash,modified_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[sourceDocumentId,sourceId,options.sourceDocumentId||file.meta.sourcePath||file.meta.filename,file.meta.sourcePath||null,file.meta.sourceUri||null,file.meta.version||null,file.contentHash,file.meta.modifiedAt||null]);
     await tx.query("INSERT INTO documents(id,organization_id,workspace_id,source_document_id,title,canonical_title,title_source,status) VALUES($1,'default','default',$2,$3,$3,'filename','uploaded')",[documentId,sourceDocumentId,filenameTitle(file.meta.filename)]);
    } else {
     await tx.query("UPDATE document_versions SET status='superseded' WHERE document_id=$1 AND status='active'",[documentId]);
@@ -60,10 +77,10 @@ export class KnowledgeService {
     await tx.query("UPDATE documents SET user_overrides='{}'::jsonb WHERE id=$1",[documentId]);
     await tx.query("UPDATE refinement_proposals SET status='stale' WHERE document_id=$1 AND status='pending'",[documentId]);
     if(!doc.title_user)await tx.query("UPDATE documents SET title=$1,canonical_title=$1,title_source='filename',title_confidence=NULL,title_reasoning=NULL WHERE id=$2",[filenameTitle(file.meta.filename),documentId]);
-    await tx.query('UPDATE source_documents SET content_hash=$1,remote_version=$2,modified_at=now() WHERE id=$3',[file.contentHash,file.meta.version||null,doc.source_document_id]);
+    await tx.query('UPDATE source_documents SET content_hash=$1,remote_version=$2,modified_at=$3,source_path=$4,source_uri=$5,removed_from_source=false WHERE id=$6',[file.contentHash,file.meta.version||null,file.meta.modifiedAt||null,file.meta.sourcePath||null,file.meta.sourceUri||null,doc.source_document_id]);
    }
    const count=await tx.query('SELECT coalesce(max(version_number),0)::int+1 AS number FROM document_versions WHERE document_id=$1',[documentId]);
-   await tx.query('INSERT INTO document_versions(id,document_id,version_number,filename,mime_type,content_hash,object_key,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[versionId,documentId,count[0].number,file.meta.filename,file.meta.mimeType || null,file.contentHash,key,file.buffer.length]);
+   await tx.query('INSERT INTO document_versions(id,document_id,version_number,filename,mime_type,content_hash,object_key,size_bytes,source_metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[versionId,documentId,count[0].number,file.meta.filename,file.meta.mimeType||null,file.contentHash,key,file.buffer.length,JSON.stringify(file.meta.metadata||{})]);
    await tx.query("UPDATE documents SET active_version_id=$1,status='uploaded',updated_at=now() WHERE id=$2",[versionId,documentId]);
    await tx.query('INSERT INTO ingestion_jobs(id,document_id,version_id) VALUES($1,$2,$3)',[randomUUID(),documentId,versionId]);
    await tx.query("INSERT INTO audit_events(id,document_id,version_id,action,next_value) VALUES($1,$2,$3,'upload',$4::jsonb)",[randomUUID(),documentId,versionId,JSON.stringify({filename:file.meta.filename,contentHash:file.contentHash,versionNumber:count[0].number})]);

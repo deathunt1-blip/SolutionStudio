@@ -1,4 +1,4 @@
-# HTTP and integration contract — Phase 0.2
+# HTTP and integration contract — Phase 0.2.1
 
 Root `package.json` installs all dependencies. Imports use relative paths with `.js` (tsx supports this). Public object keys use camelCase; domain types are in `packages/core/src/types.ts` and `packages/refinement/src/types.ts`. Proposal field names deliberately include `document_type` to match the refinement field contract.
 
@@ -11,6 +11,39 @@ Root `package.json` installs all dependencies. Imports use relative paths with `
 - `packages/refinement/src/engine.ts`: `refineDocument(input, provider): Promise<RefinementOutput>` and `analyzeCorpus(cards, registries, provider): Promise<CorpusAnalysisOutput>`. Structured suggestions only; no database writes.
 - `packages/refinement/src/context.ts`: `CorpusContextBuilder(db).build(document, parsed)` and `buildCorpusCards(db, ids?)`; card version IDs bind proposals to the source snapshot.
 - `packages/refinement/src/similarity.ts`: `PostgreSQLDocumentSimilarityProvider` implements the replaceable `DocumentSimilarityProvider` interface.
+- `packages/core/src/sources.ts`: provider-neutral `RemoteSourceAdapter`, `RemoteResource`, `SourceListing`, `StructuredSourceData`, and schema mapping contracts.
+- `packages/source-adapters/src/feishu/index.ts`: `FeishuSourceAdapter(credentials, options?)` and `parseFeishuUrl(url)`. Constructor transport overrides are test-only; source configuration cannot override API hosts.
+- `packages/structured/src/service.ts`: structured dataset storage, explicit mapping confirmation, fact reconciliation/history and search; no Feishu API dependency.
+
+## Connections, sync and structured data
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `GET /api/connections` | — | `{items:[connection]}` including public App ID, with no App Secret/token/secret reference |
+| `POST /api/connections` | `{name,appId,appSecret}` | `{connection}` |
+| `PATCH /api/connections/:id` | Optional `name`, `appId`, `appSecret`, `status:'connected'|'disabled'` | `{connection}`; omitted secret keeps the current value |
+| `POST /api/connections/:id/test` | `{rootUrl}` | Actual token plus root resource permission check |
+| `GET /api/sources` | — | `{items:[source]}` including resource count and last job |
+| `POST /api/sources` | `{name,connectionId,rootUrl,recursive?,authorityHint?}` | `{source}`; URL infers Wiki or Sheet mode |
+| `PATCH /api/sources/:id` | Optional `name`, `rootUrl`, `recursive`, `authorityHint`, `status:'ready'|'disabled'` | `{source}`; queued/running sync returns 409 |
+| `POST /api/sources/:id/sync` | Optional `{retryFailed:boolean}` | HTTP 202 `{job}`; existing queued/running job is reused |
+| `GET /api/sources/:id/jobs` | — | `{items:[job]}` with counts and redacted per-resource errors |
+| `GET /api/sources/:id/resources` | — | `{items:[resource]}` with local document/dataset IDs and status |
+| `GET /api/datasets` | — | `{items:[dataset]}` |
+| `GET /api/datasets/:id` | — | `{dataset}` with schema, preview/records, mapping and history |
+| `POST /api/datasets/:id/suggest` | Optional `{useAi:boolean}` | Mapping/title/summary suggestions; does not confirm mapping |
+| `POST /api/datasets/:id/mapping` | `{headerRow,productKey?,productName?,isProductTable,authority,fields,title?,summary?}` | `{dataset}` after explicit mapping confirmation and fact reconciliation |
+| `GET /api/facts?q=...` | Optional query | `{items:[fact]}` with dataset, record and source-row evidence |
+
+`authorityHint` is `none`, `reference`, or `authoritative`; it is an advisory source setting, not automatic authority promotion. Source config fixes `syncMode:'manual'`; source mode is `mirror` and source of truth is `remote`. `headerRow` and record row indices are one-based. Mapping `authority` is `reference` or `authoritative`, and field semantic types are `identifier`, `name`, `number`, `text`, `enum`, `url`, `date`, `unknown`.
+
+Sync jobs use `queued`, `running`, `completed`, `partial`, or `failed`; counters include `discovered`, `added`, `updated`, `unchanged`, `removed`, `failed`, and `unsupported`. A listing returns `{items,complete,errors}`. Only a complete error-free normal listing permits removal inference; retry-only or interrupted jobs cannot archive unseen resources. Removal archives local knowledge or deactivates structured facts while preserving originals, dataset revisions and audit history.
+
+Docx resources expose a reliable `docx:<revision_id>`; unchanged shortcuts must also compare title, source path and remote URL. Legacy exports provide `SourceFile.meta.metadata.contentFingerprint` for stable content comparison; `SourceFile.contentHash` remains the SHA-256 of original bytes. Sheet reads preserve physical row positions and reject mixed revisions. An empty terminal Wiki page may omit `items`; omitted `items` with `has_more:true` is an incomplete listing.
+
+Docx File Blocks additionally produce `objectType:'attachment'` resources with stable ID `feishu:attachment:<parentDocumentToken>:<blockId>`. `remoteToken` is the media token; `remoteVersion` is `media:<token>`. Metadata includes parent document identity/revision/URL, block ID, original filename, extension and MIME hint. Supported parser formats are document resources; unsupported formats remain discoverable with `kind:'unsupported'`. Block-list failures make the entire source listing incomplete, retaining successful pages and preventing deletion inference. Downloads use the fixed Drive media endpoint; ordinary body hyperlinks are not followed.
+
+Connections store opaque secret references in SQL, with server-side encrypted local or injected secret storage. Tenant tokens are memory-only. API responses and errors do not expose credentials or upstream response bodies. URL/parser validation restricts production requests to the official Feishu API host. No endpoint writes remote business data. Setup and limits: [FEISHU_SETUP.md](docs/FEISHU_SETUP.md).
 
 ## Knowledge API
 
@@ -90,6 +123,6 @@ Groups are many-to-many document collections independent from document type or a
 
 Malformed inputs return HTTP 400, missing resources 404, and stale/locked state conflicts 409 with `{message:string}`. The service is scoped to the default organization/workspace and global documents; it is not a public multitenant API.
 
-Backend export `createApp(options?: {dataDir?:string;databaseUrl?:string;llmDisabled?:boolean})` returning Fastify instance for integration tests. index.ts starts at PORT default 4310; serves dist/ built frontend. Vite proxy /api -> http://127.0.0.1:4310.
+Backend export `createApp(options?: {dataDir?:string;databaseUrl?:string;llmDisabled?:boolean;providerFactory?;secretStore?;adapterFactory?})` returns a Fastify instance. Tests inject provider, secret store and remote-adapter factories to avoid real paid or company API calls. `index.ts` starts at PORT default 4310 and serves the built frontend from `dist/`. Vite proxies `/api` to `http://127.0.0.1:4310`.
 
 `RefinementService` owns its worker lifecycle and does not close the shared database. The application stops it before closing `KnowledgeService`. Migrations are version tracked at startup; see [ARCHITECTURE.md](ARCHITECTURE.md). Validation and current acceptance evidence are recorded in [docs/PHASE_0_2_VALIDATION.md](docs/PHASE_0_2_VALIDATION.md).

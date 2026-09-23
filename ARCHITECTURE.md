@@ -1,4 +1,4 @@
-# Architecture — Phase 0.2
+# Architecture — Phase 0.2.1
 
 ## Boundaries
 
@@ -18,9 +18,13 @@ library selection → refinement worker → bounded current evidence + corpus co
 
 eligible document cards → corpus analysis worker → taxonomy proposals
   → explicit acceptance → knowledge groups / nonconflicting aliases
+
+external connection → secret store → remote source adapter → durable sync job
+  → document bytes → existing knowledge ingestion / versions / search
+  → structured rows → mapping confirmation → generic product facts / history
 ```
 
-Core contracts are in `packages/core/src/types.ts`; refinement, corpus-card and similarity contracts are in `packages/refinement/src/types.ts`. Source, parser, model, object storage, embedding and retriever are separate contracts. Classification and refinement import `LLMProvider`, not a Kimi SDK. The server composition layer chooses implementations. Registry keys and tags are database rows, not compile-time enums.
+Core contracts are in `packages/core/src/types.ts` and `packages/core/src/sources.ts`; refinement, corpus-card and similarity contracts are in `packages/refinement/src/types.ts`. Source, parser, model, object storage, embedding and retriever are separate contracts. Classification and refinement import `LLMProvider`, not a Kimi SDK. The server composition layer chooses implementations. Registry keys and tags are database rows, not compile-time enums.
 
 ## Packages
 
@@ -29,7 +33,10 @@ Core contracts are in `packages/core/src/types.ts`; refinement, corpus-card and 
 | `apps/web` | Chinese inbox, library, classification review, batch refinement review, corpus suggestions, groups, settings and details |
 | `apps/server` | HTTP validation, upload limits, downloads, composition and queue lifecycle |
 | `packages/core` | Domain types and replaceable boundary interfaces |
-| `packages/source-adapters` | Manual upload, bounded local folder import, explicit Feishu mock |
+| `packages/source-adapters` | Manual upload, bounded local folder import, live Feishu read-only HTTP connector and explicit mock fixture |
+| `packages/connections` | Generic external connections, credential redaction and encrypted/injectable SecretStore |
+| `packages/sources` | Durable manual sync jobs, partial failure isolation, change detection and safe remote-removal reconciliation |
+| `packages/structured` | Provider-neutral datasets, schema mapping, row provenance, product facts and parameter history |
 | `packages/parsers` | DOCX / PDF / spreadsheet / CSV / Markdown / text normalization |
 | `packages/classification` | Fingerprint, field validation, aliases, few-shot feedback and review gating |
 | `packages/llm` | Kimi/OpenAI-compatible HTTP provider, timeout and error handling |
@@ -38,6 +45,22 @@ Core contracts are in `packages/core/src/types.ts`; refinement, corpus-card and 
 | `packages/refinement` | Unified model refinement, corpus cards/context, replaceable similarity, durable proposals, explicit apply/rollback, groups and corpus analysis |
 | `packages/evaluation` | Isolated human labels, classification benchmarks, threshold/calibration metrics and paired comparisons |
 | `migrations` | PostgreSQL relational schema |
+
+## Remote sources and structured facts
+
+`RemoteSourceAdapter` returns provider-neutral resource listings and either original document bytes or structured rows. The Feishu implementation alone knows tenant authentication, Wiki pagination, document exports and Sheets APIs. Neither Knowledge Core nor Structured Core depends on the Feishu client. Sources name an explicit root, remain read-only mirrors, and preserve provider/token/URL/version/time/path provenance.
+
+The serial sync worker persists progress and per-resource failures. Unsupported types do not stop siblings. `SourceListing.complete=false`, missing pagination, permission failures, interrupted jobs and retry-only runs disable deletion inference. A complete listing may archive disappeared documents or remove active facts; originals and historical versions remain intact.
+
+Docx compares official document revisions and checks for edits during export. Legacy native exports use a stable rendered-content fingerprint to ignore export ZIP timestamps; immutable storage continues to use raw-file SHA-256. Changes to title/path/URL prevent unchanged shortcuts. Sheet values retain physical row positions across paged ranges, and inconsistent revisions during reading reject the snapshot.
+
+Docx file attachments are discovered from paginated official block data at a fixed parent revision. Their stable identity combines parent document and block ID, so replacing a media token updates the existing logical resource. Supported files use the ordinary ingestion pipeline; unsupported extensions stay visible without blocking siblings. Parent document/block URL and media token remain evidence. No ordinary body-link graph, image tree or archive contents are recursively fetched; failed attachment enumeration disables deletion inference.
+
+Structured datasets store raw rows separately from derived schema and records. Users confirm the header row, field meanings, product key/name columns, product-table status and authority before facts become active. There are no fixed camera fields or hard-coded product IDs. Each fact points to its dataset and record, and each record keeps spreadsheet/workbook identity and source row. Changed or removed parameter values produce audit history with before/after, source revision and sync time. Header changes invalidate the previous mapping until reconfirmed.
+
+Kimi may suggest a mapping, title and summary from bounded table evidence; it cannot invent missing values or silently confirm authoritative facts. Document search remains lexical PostgreSQL retrieval; structured facts have a separate generic query API. Automatic cross-source conflict resolution, embedding search, scheduled sync, webhooks, reverse writes and full ACL mirroring remain outside this phase.
+
+The local SecretStore encrypts credentials using AES-256-GCM; SQL stores references only and access tokens remain in memory. Development uses a local key file, while production requires `SOURCE_SECRET_KEY` or an injected external store. Protect and back up the encrypted store and key with the data directory. Connector requests target the fixed official API host, reject redirects, bound response sizes, rate-limit calls and retry transient failures without returning upstream bodies.
 
 ## Durable knowledge
 
@@ -54,6 +77,8 @@ Original filenames remain immutable on `document_versions.filename`. Parser head
 Versions keep `extractive_summary` as the local fallback and `ai_summary` separately. `summary` is the display-compatible selected summary, and `summary_source` identifies its origin. Accepted refinement values are explicit user confirmations; model confidence and evidence remain on the proposal instead of being promoted into an unreviewed ground truth.
 
 Migration 002 adds these fields and preserves existing display names. Existing parser-derived titles are identified by provenance but are not silently renamed during migration. Migration 003 creates `refinement_batches`, `refinement_proposals`, `refinement_applies`, `knowledge_groups`, `knowledge_group_documents`, `entity_alias_groups`, `entity_aliases`, `corpus_analyses`, and `taxonomy_proposals`. `schema_migrations` records each applied migration, so backfills run once. Back up the data directory with its sole PGlite process stopped before upgrading; a code rollback alone does not undo a schema migration.
+
+Migration 004 adds structured datasets, dataset snapshots, facts and fact change history. Migration 005 adds external connection references, durable sync jobs and source-resource mappings. Connection secrets remain outside ordinary SQL fields. Upgrades create capability without automatically starting a remote sync.
 
 ## Proposal lifecycle and rollback
 
@@ -81,7 +106,7 @@ P0.5 support is deliberately limited: entity confirmation records canonical/alia
 
 Every field has `value`, `confidence`, `source`, and optional reasoning. Only uncertain document type and authority block indexing; low-confidence tags are advisory. Human updates always use `source=user` and confidence 1. Thresholds are configurable. Partial parsing has visible warnings and review treatment.
 
-`authoritative`, `reference`, `style_only`, and `unknown` express how a source can be used. A model cannot invent absent product specifications, and a historical reference never overwrites authoritative facts. P0 does not automatically synthesize a canonical product fact database. Fact/conflict models are extension points requiring document/version/chunk evidence.
+`authoritative`, `reference`, `style_only`, and `unknown` express how a source can be used. A model cannot invent absent product specifications, and a historical reference never overwrites authoritative facts. Phase 0.2.1 creates product facts only from explicitly confirmed structured mappings with dataset/row evidence. It does not automatically synthesize canonical facts from narrative documents or resolve cross-source conflicts.
 
 ## Retrieval
 
@@ -103,7 +128,7 @@ This phase uses a fixed default organization/workspace. Do not expose it as a pu
 
 ## Extension path
 
-- **Source**: register a `KnowledgeSourceAdapter`, map remote IDs/revisions to source metadata; preserve deletion/archive history.
+- **Source**: use `KnowledgeSourceAdapter` for file ingestion or implement `RemoteSourceAdapter` for sync; map remote IDs/revisions to source metadata and preserve deletion/archive history. Structured sources return generic row data, never provider-specific core tables.
 - **Parser**: register a `DocumentParser`; preserve blocks/tables and explicit failure warnings.
 - **LLM**: inject another `LLMProvider`; classification does not change.
 - **Storage**: implement `ObjectStorage` for S3-compatible storage; original keys and provenance stay stable.
