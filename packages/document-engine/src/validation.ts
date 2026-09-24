@@ -8,7 +8,7 @@ import {asSource,allRequirements} from './context.js';
 import {blockText} from './blocks.js';
 import type {StructuredFact} from '../../structured/src/types.js';
 
-type Metric = 'count'|'accuracy'|'p95'|'p90'|'mean'|'frameRate'|'refreshRate'|'latency'|'fov'|'focalLength'|'workingDistance'|'resolution'|'boundary'|'range'|'viewCount'|`coverage${string}`|`under${string}`|'percentage';
+type Metric = 'count'|'accuracy'|'spatialResolution'|'p95'|'p90'|'mean'|'frameRate'|'refreshRate'|'latency'|'fov'|'focalLength'|'workingDistance'|'resolution'|'boundary'|'range'|'viewCount'|`coverage${string}`|`under${string}`|'percentage';
 type OpticalScope='report'|'product';
 interface Quantity {metric:Metric;value:number|number[];unit:string;raw:string;quote:string;factor:number;model?:string;scope?:OpticalScope;axis?:'horizontal'|'vertical';dimension?:'width'|'height'|'length'|'clearance'|'depth'}
 interface Evidence extends Quantity {source:SourceRef;priority:number;requirement:boolean}
@@ -40,7 +40,7 @@ const normative=new RegExp(normativeOperator.source+'|(?:示例|举例|假设|�
 const standardTitle=/标准|规范|规程|standard|(?:^|[\s_])(?:GB|ISO|IEC|IEEE|EN|T[\/_])[\s\/_\d.-]/i;
 const requirementWording=/(?:客户|项目|用户)[^，；。]{0,12}(?:要求|目标|期望)|(?:要求|目标|期望|需求指标)/;
 const capabilityWording=/(?:满足|达到|支持|具备|实现|能够|可达|保证|配置|采用|部署|配备|选用)/;
-const metricLabels:Partial<Record<Metric,string>>={count:'设备数量',accuracy:'精度',p95:'P95 理论误差',p90:'P90 理论误差',mean:'平均理论误差',frameRate:'帧率',refreshRate:'显示刷新率',latency:'时延',fov:'视场角',focalLength:'镜头焦距',workingDistance:'光学工作距离',resolution:'分辨率',boundary:'场地尺寸',range:'距离',viewCount:'平均可见视点数',percentage:'比例'};
+const metricLabels:Partial<Record<Metric,string>>={count:'设备数量',accuracy:'精度',spatialResolution:'三维分辨率',p95:'P95 理论误差',p90:'P90 理论误差',mean:'平均理论误差',frameRate:'帧率',refreshRate:'显示刷新率',latency:'时延',fov:'视场角',focalLength:'镜头焦距',workingDistance:'光学工作距离',resolution:'分辨率',boundary:'场地尺寸',range:'距离',viewCount:'平均可见视点数',percentage:'比例'};
 const opticalMetric=(metric:Metric)=>['fov','focalLength','workingDistance'].includes(metric);
 
 function metricFromLabel(label:string):Metric|undefined {
@@ -62,13 +62,14 @@ function metricFromLabel(label:string):Metric|undefined {
  if(/framerate|帧率|采样率|采集频率/.test(value))return 'frameRate';
  if(/latency|时延|延迟/.test(value))return 'latency';
  if(/fov|视场角/.test(value))return 'fov';
+ if(/(?:3d|三维|空间).{0,6}分辨率|分辨率.{0,6}(?:3d|三维|空间)/.test(value))return 'spatialResolution';
  if(/resolution|分辨率|像素/.test(value))return 'resolution';
  if(/accuracy|精度|误差/.test(value))return 'accuracy';
  if(/coverage|覆盖率/.test(value))return 'coverage';
  if(/range|distance|height|width|length|距离|范围|長度|长度|宽度|高度|边长|深度/.test(value)||/^(?:长|宽|高|深|距(?:离)?[^\d]{0,20})$/.test(value)||/(?:长|宽|高|深)(?:约|为|是|[：:]|\d)|距[^，；。\d]{0,20}\d/.test(value))return 'range';
 }
 function defaultUnit(metric:Metric|undefined):string {
- if(metric==='count')return '台';if(['accuracy','p95','p90','mean','focalLength'].includes(metric??''))return 'mm';
+ if(metric==='count')return '台';if(['accuracy','spatialResolution','p95','p90','mean','focalLength'].includes(metric??''))return 'mm';
  if(metric==='frameRate')return 'fps';if(metric==='refreshRate')return 'Hz';if(metric==='latency')return 'ms';if(metric==='fov')return '°';
  if(metric==='resolution')return '像素';if(metric==='range'||metric==='boundary'||metric==='workingDistance')return 'm';
  if(metric==='viewCount')return '视点';if(metric?.startsWith('coverage')||metric?.startsWith('under')||metric==='percentage')return '%';return '';
@@ -114,12 +115,17 @@ function quantities(text:string,forced?:Metric):Quantity[] {
   let metric:Metric,factor=1,canonical=unit;
   if(/^(mm|毫米|cm|厘米|m|米)$/i.test(unit)){
    if(label?.startsWith('under')&&[.3,.5].includes(value))continue;
-    metric=label&&['p95','p90','mean','accuracy','range','boundary','focalLength','workingDistance'].includes(label)?label:'accuracy';
+    metric=label&&['p95','p90','mean','accuracy','spatialResolution','range','boundary','focalLength','workingDistance'].includes(label)?label:'accuracy';
    factor=/cm|厘米/i.test(unit)?10:/^(m|米)$/i.test(unit)?1000:1;canonical='mm';
     if(metric==='range'||metric==='boundary'||metric==='workingDistance'){factor/=1000;canonical='m';}
   }else if(/^(fps|[kM]?Hz|赫兹|帧)/i.test(unit)){metric=label==='refreshRate'||/刷新率/.test(before.slice(-18))?'refreshRate':'frameRate';factor=/^kHz$/i.test(unit)?1000:unit==='MHz'?1000000:unit==='mHz'?.001:1;canonical=metric==='refreshRate'?'Hz':'fps';}
   else if(/^(ms|毫秒|秒|s)$/i.test(unit)){metric='latency';factor=/^(s|秒)$/.test(unit)?1000:1;canonical='ms';}
-  else if(/[%％]/.test(unit)){metric=label?.startsWith('coverage')||label?.startsWith('under')?label:'percentage';canonical='%';}
+  else if(/[%％]/.test(unit)){
+   // A sentence can introduce the site dimensions before naming a particular
+   // coverage tier. Resolve percentages from the nearest clause first.
+   const localLabel=metricFromLabel(before.split(/[：:，；。]/).at(-1)??'');
+   metric=localLabel?.startsWith('coverage')||localLabel?.startsWith('under')?localLabel:label?.startsWith('coverage')||label?.startsWith('under')?label:'percentage';canonical='%';
+  }
   else if(/度|°/.test(unit)){metric='fov';canonical='°';}
   else if(/像素/.test(unit)){metric='resolution';factor=unit==='万像素'?10000:1;canonical='pixels';}
   else if(/视点|视角/.test(unit)){if(label!=='viewCount')continue;metric='viewCount';canonical='views';}

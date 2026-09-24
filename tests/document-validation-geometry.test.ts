@@ -72,3 +72,16 @@ it('does not compare LED refresh rate with camera capture frame rate',()=>{
  expect(issues.some(issue=>issue.message.includes('依据为 180fps'))).toBe(false);
  expect(check('相机帧率为3840Hz。',c).length).toBeGreaterThan(0);
 });
+it('keeps millimetre-scale 3D resolution separate from positioning accuracy',()=>{
+ const c=context();c.products=['MC4000','CMLock'];
+ const spec:SourceRef={type:'knowledge_chunk',id:'mc4000-spec',label:'MC4000产品规格书',evidence:'MC4000产品特点：3D分辨率≤0.1mm。',authority:'authoritative',use:'fact_evidence',manualEvidence:true};
+ expect(check('MC4000三维分辨率≤0.1mm。',c,[spec])).toEqual([]);
+ expect(check('MC4000定位精度≤0.1mm。',c,[spec]).length).toBeGreaterThan(0);
+ expect(check('K18三维分辨率≤0.1mm。',c,[spec]).length).toBeGreaterThan(0);
+});
+it('matches each explicitly named report coverage tier at full coverage',()=>{
+ const c=context();c.engineering={sourceType:'scenelab',scene:{boundaryM:[20,10,3.1]},deployment:{equipmentCount:30,models:[{name:'MC4000',count:30}]},performance:{coverageGe1:100,coverageGe2:100,coverageGe3:100,coverageGe4:99.85714285714286,coverageGe5:93.57142857142857},assets:[],sourceRef:{type:'engineering_data',id:'report',label:'场地仿真报告',evidence:'覆盖仿真'}};
+ expect(check('至少1视点覆盖率为100%；至少2视点覆盖率为100%；至少3视点覆盖率为100%。',c)).toEqual([]);
+ expect(check('报告基于场地尺寸完成覆盖仿真：至少1视点覆盖率为100%。',c)).toEqual([]);
+ expect(check('至少4视点覆盖率为100%。',c).length).toBeGreaterThan(0);
+});
