@@ -1,4 +1,4 @@
-export interface SourceRef { type:'project_input'|'engineering_data'|'structured_fact'|'knowledge_chunk'|'knowledge_section'|'user'; id:string; label:string; evidence:string; versionId?:string; authority?:string;documentId?:string;inputId?:string;use?:'writing_reference'|'fact_evidence';labelKind?:'fact'|'requirement'|'document' }
+export interface SourceRef { type:'project_input'|'engineering_data'|'structured_fact'|'knowledge_chunk'|'knowledge_section'|'user'; id:string; label:string; evidence:string; versionId?:string; authority?:string;documentId?:string;inputId?:string;use?:'writing_reference'|'fact_evidence';labelKind?:'fact'|'requirement'|'document';manualEvidence?:true }
 export interface TextRun { text:string; bold?:boolean }
 export type DocumentBlock =
  | {id:string;type:'paragraph'|'heading';text:string;runs?:TextRun[];level?:number}

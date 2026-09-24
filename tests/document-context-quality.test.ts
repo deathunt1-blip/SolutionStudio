@@ -49,9 +49,10 @@ describe('chapter composer and optional economy controls',()=>{
   expect(prompt.historicalSections[0].text).toContain('96 台 K9');expect(prompt.projectFacts[0]).toMatchObject({id:'count',value:16});
   expect(prompt.authoritativeEvidence).toEqual([]);expect(prompt.structuredFacts).toEqual([]);
   expect(prompt.styleExample).toEqual({text:'写作示例。'});expect(built.sources.some(s=>s.id==='style')).toBe(false);
-  expect(prompt.sectionBrief.recommendedStructure).toEqual(['部署依据','安装支撑与视线','系统标定']);
-  expect(prompt.sectionBrief.reusableLogic).toContain('先检查支撑条件，再完成安装与标定');
-  expect(prompt.blueprints[0].projectSpecificElements).toContain('历史设备数量和型号');
+  expect(prompt.sectionBrief.recommendedStructure).toEqual(['部署设计依据','布置与视线组织','安装与标定流程']);
+  expect(prompt.sectionBrief.referenceDesignChoices[0].notCurrentDecisions).toContain('先检查支撑条件，再完成安装与标定');
+  expect(prompt.blueprints[0]).toMatchObject({sourceId:'history-section',currentProjectDecisions:false,allowedUse:'conditional_reasoning_and_organization'});
+  expect(prompt.blueprints[0].referenceBlueprint.projectSpecificElements).toContain('历史设备数量和型号');
   expect(built.sources.find(s=>s.id==='history-section')).toMatchObject({type:'knowledge_section',use:'writing_reference',documentId:'historical-document'});
   expect(built.prompt).not.toContain('某历史客户机器人技术方案');
   expect(generationSystem).toContain('不能移植为当前项目能力');expect(generationSystem).toContain('不限制固定段数');expect(generationSystem).toContain('不为了减少token压缩成摘要');
@@ -63,10 +64,10 @@ describe('chapter composer and optional economy controls',()=>{
   const noProduct=context();noProduct.products=[];built=await buildSectionContext(section,noProduct,retriever(sources).instance,structured,32000);
   expect(JSON.parse(built.prompt).authoritativeEvidence).toEqual([]);expect(JSON.parse(built.prompt).historicalSections).toEqual([]);
  });
- test('a chapter uses one coherent blueprint structure instead of combining unrelated project modules',async()=>{
+ test('the current chapter organization does not inherit even the first historical blueprint as its plan',async()=>{
   const main=history(),unrelated=history('unrelated');unrelated.section.blueprint!.recommendedStructure=['机器人多足采集','肌电设备配置'];
   const built=await buildSectionContext(section,context(),retriever([],[main,unrelated]).instance,structured,32000);
-  expect(JSON.parse(built.prompt).sectionBrief.recommendedStructure).toEqual(main.section.blueprint!.recommendedStructure);
+  expect(JSON.parse(built.prompt).sectionBrief.recommendedStructure).toEqual(['部署设计依据','布置与视线组织','安装与标定流程']);
  });
  test('writer gets a focused brief without unresolved questions, full conflict messages or internal choice fields',async()=>{
   const project=context();project.unresolved=[{id:'pending-secret',key:'accuracy',question:'内部澄清清单 精度到底多少？'}];project.requirements.unresolved=project.unresolved;

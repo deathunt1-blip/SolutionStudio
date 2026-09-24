@@ -8,17 +8,25 @@ import {asSource,allRequirements} from './context.js';
 import {blockText} from './blocks.js';
 import type {StructuredFact} from '../../structured/src/types.js';
 
-type Metric = 'count'|'accuracy'|'p95'|'p90'|'mean'|'frameRate'|'latency'|'fov'|'focalLength'|'workingDistance'|'resolution'|'boundary'|'range'|'viewCount'|`coverage${string}`|`under${string}`|'percentage';
+type Metric = 'count'|'accuracy'|'p95'|'p90'|'mean'|'frameRate'|'refreshRate'|'latency'|'fov'|'focalLength'|'workingDistance'|'resolution'|'boundary'|'range'|'viewCount'|`coverage${string}`|`under${string}`|'percentage';
 type OpticalScope='report'|'product';
-interface Quantity {metric:Metric;value:number|number[];unit:string;raw:string;quote:string;factor:number;model?:string;scope?:OpticalScope;axis?:'horizontal'|'vertical'}
+interface Quantity {metric:Metric;value:number|number[];unit:string;raw:string;quote:string;factor:number;model?:string;scope?:OpticalScope;axis?:'horizontal'|'vertical';dimension?:'width'|'height'|'length'|'clearance'|'depth'}
 interface Evidence extends Quantity {source:SourceRef;priority:number;requirement:boolean}
 const normalize=(value:string)=>value.normalize('NFKC').replace(/\s+/g,'').toLowerCase();
 const numeric=/(?<![\w.])(\d+(?:\.\d+)?)\s*(万像素|像素|毫秒|毫米|厘米|赫兹|帧(?:\s*\/\s*秒)?|[kM]?Hz|fps|mm|cm|ms|m(?![a-z])|米|秒|s(?![a-z])|%|％|度|°|台|视点|视角)/gi;
 const modelPattern=/(?<![A-Za-z0-9_])(?:K|MC|M|R|S|C|Q)\d{1,5}(?:[A-Z])?(?![A-Za-z0-9_])/gi;
-const singleModel=(text:string):string|undefined=>{const models=[...new Set((text.match(modelPattern)??[]).map(value=>value.toUpperCase()))];return models.length===1?models[0]:undefined;};
+// C3D is also a data-file format. Exclude it only in that explicit context;
+// identifiers such as C3 or a C3D camera still receive model validation.
+const modelMatches=(text:string)=>[...text.matchAll(modelPattern)].filter(match=>{
+ if(match[0].toUpperCase()!=='C3D')return true;
+ const before=text.slice(0,match.index!),after=text.slice(match.index!+match[0].length);
+ if(/^\s*(?:相机|摄像机|设备|型号)/.test(after)||/(?:配置|配备|选用|型号|选型为)\s*$/.test(before)&&!/^\s*(?:文件|格式)/.test(after))return true;
+ return !/(?:格式|文件|导出|导入|format|file)/i.test(text);
+});
+const singleModel=(text:string):string|undefined=>{const models=[...new Set(modelMatches(text).map(match=>match[0].toUpperCase()))];return models.length===1?models[0]:undefined;};
 function quantityModel(text:string,start:number,end:number,metric:Metric):string|undefined {
  if(metric==='boundary')return undefined; // The project site belongs to the deployment, not one camera model mentioned alongside it.
- const matches=[...text.matchAll(modelPattern)];
+ const matches=modelMatches(text);
  // Camera counts commonly precede their model ("20台K18"); product specifications follow it.
  const following=matches.find(match=>match.index!>=end&&/^\s*$/.test(text.slice(end,match.index)));
  if(metric==='count'&&following)return following[0].toUpperCase();
@@ -32,12 +40,12 @@ const normative=new RegExp(normativeOperator.source+'|(?:示例|举例|假设|�
 const standardTitle=/标准|规范|规程|standard|(?:^|[\s_])(?:GB|ISO|IEC|IEEE|EN|T[\/_])[\s\/_\d.-]/i;
 const requirementWording=/(?:客户|项目|用户)[^，；。]{0,12}(?:要求|目标|期望)|(?:要求|目标|期望|需求指标)/;
 const capabilityWording=/(?:满足|达到|支持|具备|实现|能够|可达|保证|配置|采用|部署|配备|选用)/;
-const metricLabels:Partial<Record<Metric,string>>={count:'设备数量',accuracy:'精度',p95:'P95 理论误差',p90:'P90 理论误差',mean:'平均理论误差',frameRate:'帧率',latency:'时延',fov:'视场角',focalLength:'镜头焦距',workingDistance:'光学工作距离',resolution:'分辨率',boundary:'场地尺寸',range:'距离',viewCount:'平均可见视点数',percentage:'比例'};
+const metricLabels:Partial<Record<Metric,string>>={count:'设备数量',accuracy:'精度',p95:'P95 理论误差',p90:'P90 理论误差',mean:'平均理论误差',frameRate:'帧率',refreshRate:'显示刷新率',latency:'时延',fov:'视场角',focalLength:'镜头焦距',workingDistance:'光学工作距离',resolution:'分辨率',boundary:'场地尺寸',range:'距离',viewCount:'平均可见视点数',percentage:'比例'};
 const opticalMetric=(metric:Metric)=>['fov','focalLength','workingDistance'].includes(metric);
 
 function metricFromLabel(label:string):Metric|undefined {
  const value=normalize(label);
- if(/boundary|场地尺寸|空间尺寸|场地边界/.test(value))return 'boundary';
+ if(/boundary|场地尺寸|空间尺寸|区域尺寸|场地边界/.test(value))return 'boundary';
  if(/focallength|焦距/.test(value))return 'focalLength';
  if(/maxworkingdistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离/.test(value))return 'workingDistance';
  const ratio=/占比|比例|%/.test(value);
@@ -50,29 +58,37 @@ function metricFromLabel(label:string):Metric|undefined {
  if(/p90|90(?:百分位|分位)/.test(value))return 'p90';
  if(/meanerror|(?:平均|均值).*(?:误差|精度)|(?:误差|精度).*(?:平均|均值)/.test(value))return 'mean';
  if(/equipmentcount|cameracount|相机数量|设备数量|数量.*台/.test(value))return 'count';
+ if(/refreshrate|刷新率/.test(value))return 'refreshRate';
  if(/framerate|帧率|采样率|采集频率/.test(value))return 'frameRate';
  if(/latency|时延|延迟/.test(value))return 'latency';
  if(/fov|视场角/.test(value))return 'fov';
  if(/resolution|分辨率|像素/.test(value))return 'resolution';
  if(/accuracy|精度|误差/.test(value))return 'accuracy';
  if(/coverage|覆盖率/.test(value))return 'coverage';
- if(/range|距离|范围|長度|长度|宽度|高度|边长/.test(value))return 'range';
+ if(/range|distance|height|width|length|距离|范围|長度|长度|宽度|高度|边长|深度/.test(value)||/^(?:长|宽|高|深|距(?:离)?[^\d]{0,20})$/.test(value)||/(?:长|宽|高|深)(?:约|为|是|[：:]|\d)|距[^，；。\d]{0,20}\d/.test(value))return 'range';
 }
 function defaultUnit(metric:Metric|undefined):string {
  if(metric==='count')return '台';if(['accuracy','p95','p90','mean','focalLength'].includes(metric??''))return 'mm';
- if(metric==='frameRate')return 'fps';if(metric==='latency')return 'ms';if(metric==='fov')return '°';
+ if(metric==='frameRate')return 'fps';if(metric==='refreshRate')return 'Hz';if(metric==='latency')return 'ms';if(metric==='fov')return '°';
  if(metric==='resolution')return '像素';if(metric==='range'||metric==='boundary'||metric==='workingDistance')return 'm';
  if(metric==='viewCount')return '视点';if(metric?.startsWith('coverage')||metric?.startsWith('under')||metric==='percentage')return '%';return '';
 }
 function quantities(text:string,forced?:Metric):Quantity[] {
  const result:Quantity[]=[];
+ const intervals=[...text.matchAll(/(?<![\w.])(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米)?\s*[～~至—–-]\s*(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米)/g)];
+ for(const match of intervals){
+  // Parse both endpoints as one quantity. The shared trailing unit belongs to
+  // both values, and an interval must not be reduced to its upper endpoint.
+  const prefix=text.slice(0,match.index!).replace(/\d+(?:\.\d+)?/g,''),first=quantities(`${prefix}${match[1]}${match[2]??match[4]}`,forced).at(-1),last=quantities(`${prefix}${match[3]}${match[4]}`,forced).at(-1);
+  if(first&&last&&first.metric===last.metric&&typeof first.value==='number'&&typeof last.value==='number')result.push({...first,value:[first.value,last.value],quote:match[0],model:quantityModel(text,match.index!,match.index!+match[0].length,first.metric)});
+ }
  const tuples=[...text.matchAll(/(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米|像素|px)?\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米|像素|px)?(?:\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*(mm|毫米|cm|厘米|m\b|米|像素|px)?)?/g)];
  const tupleSpans:[number,number][]=[];
  for(const match of tuples){
   // Camera specification cells often use "4608x4096@170fps" without the word
   // resolution. Do not infer pixels from a bare width/height pair or length units.
   const resolutionAtRate=!match[5]&&!match[2]&&!match[4]&&/^\d+$/.test(match[1])&&/^\d+$/.test(match[3])&&/^\s*@\s*\d+(?:\.\d+)?\s*(?:fps\b|Hz\b|帧(?:\s*\/\s*秒)?)/i.test(text.slice(match.index!+match[0].length));
-  const metric=match[5]?'boundary':forced==='resolution'||/分辨率|resolution|像素/i.test(text)||resolutionAtRate?'resolution':undefined;
+  const metric=match[5]?'boundary':(match[2]||match[4])&&/^(?:mm|毫米|cm|厘米|m|米)$/i.test(match[2]??match[4]??'')&&/(?:场地|区域|空间|单元|尺寸|范围|宽|长)/.test(text)?'boundary':forced==='boundary'?'boundary':forced==='resolution'||/分辨率|resolution|像素/i.test(text)||resolutionAtRate?'resolution':undefined;
   if(!metric)continue;
   const sharedUnit=match[6]??match[4]??match[2]??'';
   const factorFor=(unit:string)=>metric==='resolution'?1:/mm|毫米/.test(unit)?.001:/cm|厘米/.test(unit)?.01:1;
@@ -81,25 +97,27 @@ function quantities(text:string,forced?:Metric):Quantity[] {
   tupleSpans.push([match.index!,match.index!+match[0].length]);
  }
  for(const match of text.matchAll(numeric)){
+  if(intervals.some(range=>match.index!>=range.index!&&match.index!<range.index!+range[0].length))continue;
   if(tupleSpans.some(([start,end])=>match.index!>=start&&match.index!<end))continue;
   const raw=match[1],unit=match[2],value=Number(raw);
   // A table row can contain focal length, FOV and working distance together.
   // Use the nearest field label for lengths rather than treating every mm as accuracy.
-  const before=text.slice(0,match.index!),after=text.slice(match.index!+match[0].length),nearby=[...before.matchAll(/focalLength|焦距|maxWorkingDistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov|P95|P90|精度|误差|场地尺寸|长度|宽度|高度|边长/gi)].at(-1);
+  const before=text.slice(0,match.index!),after=text.slice(match.index!+match[0].length),nearby=[...before.matchAll(/focalLength|焦距|maxWorkingDistance|工作距离|追踪(?:距离)?|跟踪(?:距离)?|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov|P95|P90|精度|误差|场地尺寸|长度|宽度|高度|边长|(?:长|宽|高|深)(?=约|为|是|[：:]|\d|\s*$)|距(?:离)?[^，；。\n\d]{0,20}/gi)].at(-1);
   const reportLens=/^(?:mm|毫米)$/i.test(unit)&&/报告|仿真/.test(text)&&/^\s*(?:光学|镜头)?配置/.test(after);
   const lensAfter=/^\s*(?:的)?(?:镜头|焦距)/.test(after)||reportLens;
-  const opticalContext=/focalLength|焦距|镜头|maxWorkingDistance|工作距离|追踪|跟踪|捕捉距离|有效距离|仿真(?:最大)?距离|光学距离|视场角|[hv]?fov/i.test(text);
   const globalLabel=metricFromLabel(text);
   const precision=[...before.matchAll(/(?:P(?:95|90)|(?:95|90)(?:百分位|分位))(?:[^、，；。\n\d]{0,12}(?:误差|精度))?|(?:平均|均值)(?:[^、，；。\n\d]{0,12}(?:误差|精度))?|精度|误差|accuracy|meanerror/gi)].at(-1);
-  const nearestPrecision=precision&&/^(?:mm|毫米|cm|厘米|m|米)$/i.test(unit)&&!globalLabel?.startsWith('under')&&(!opticalContext||!nearby||precision.index!+precision[0].length>=nearby.index!+nearby[0].length)?/平均|均值|meanerror/i.test(precision[0])?'mean':metricFromLabel(precision[0]):undefined;
-  const label=forced??(lensAfter?'focalLength':nearestPrecision??(opticalContext&&nearby?metricFromLabel(nearby[0]):globalLabel));
+  const nearbyDistance=nearby?match.index!-(nearby.index!+nearby[0].length):Infinity;
+  const afterDimension=/^\s*(?:长|宽|高|深|长度|宽度|高度|深度)/.test(after);
+  const nearestPrecision=precision&&/^(?:mm|毫米|cm|厘米|m|米)$/i.test(unit)&&!globalLabel?.startsWith('under')&&match.index!-(precision.index!+precision[0].length)<=24&&(!nearby||precision.index!+precision[0].length>=nearby.index!+nearby[0].length)?/平均|均值|meanerror/i.test(precision[0])?'mean':metricFromLabel(precision[0]):undefined;
+  const label=forced??(globalLabel?.startsWith('under')?globalLabel:lensAfter?'focalLength':afterDimension?'range':nearestPrecision??(nearby&&nearbyDistance<=32?metricFromLabel(nearby[0]):globalLabel));
   let metric:Metric,factor=1,canonical=unit;
   if(/^(mm|毫米|cm|厘米|m|米)$/i.test(unit)){
    if(label?.startsWith('under')&&[.3,.5].includes(value))continue;
     metric=label&&['p95','p90','mean','accuracy','range','boundary','focalLength','workingDistance'].includes(label)?label:'accuracy';
    factor=/cm|厘米/i.test(unit)?10:/^(m|米)$/i.test(unit)?1000:1;canonical='mm';
     if(metric==='range'||metric==='boundary'||metric==='workingDistance'){factor/=1000;canonical='m';}
-  }else if(/^(fps|[kM]?Hz|赫兹|帧)/i.test(unit)){metric='frameRate';factor=/^kHz$/i.test(unit)?1000:unit==='MHz'?1000000:unit==='mHz'?.001:1;canonical='fps';}
+  }else if(/^(fps|[kM]?Hz|赫兹|帧)/i.test(unit)){metric=label==='refreshRate'||/刷新率/.test(before.slice(-18))?'refreshRate':'frameRate';factor=/^kHz$/i.test(unit)?1000:unit==='MHz'?1000000:unit==='mHz'?.001:1;canonical=metric==='refreshRate'?'Hz':'fps';}
   else if(/^(ms|毫秒|秒|s)$/i.test(unit)){metric='latency';factor=/^(s|秒)$/.test(unit)?1000:1;canonical='ms';}
   else if(/[%％]/.test(unit)){metric=label?.startsWith('coverage')||label?.startsWith('under')?label:'percentage';canonical='%';}
   else if(/度|°/.test(unit)){metric='fov';canonical='°';}
@@ -108,13 +126,15 @@ function quantities(text:string,forced?:Metric):Quantity[] {
   else {metric='count';canonical='count';}
   const axisLabel=[...before.matchAll(/水平|横向|hfov|垂直|纵向|vfov/gi)].at(-1);
   const axis=metric==='fov'&&axisLabel&&before.length-(axisLabel.index!+axisLabel[0].length)<=12?/水平|横向|hfov/i.test(axisLabel[0])?'horizontal':'vertical':undefined;
-  result.push({metric,value:value*factor,unit:canonical,raw,quote:match[0],factor,model:quantityModel(text,match.index!,match.index!+match[0].length,metric),...(axis?{axis}:{}),...(reportLens&&metric==='focalLength'?{scope:'report' as const}:{})});
+  const dimensionLabel=afterDimension?after.match(/^\s*(长|宽|高|深|长度|宽度|高度|深度)/)?.[1]:nearbyDistance<=32?nearby?.[0]:undefined;
+  const dimension=metric==='range'&&dimensionLabel?/宽/.test(dimensionLabel)?'width':/高/.test(dimensionLabel)?'height':/深/.test(dimensionLabel)?'depth':/^距/.test(dimensionLabel)?'clearance':/长/.test(dimensionLabel)?'length':undefined:undefined;
+  result.push({metric,value:value*factor,unit:canonical,raw,quote:match[0],factor,model:quantityModel(text,match.index!,match.index!+match[0].length,metric),...(dimension?{dimension}:{}),...(axis?{axis}:{}),...(reportLens&&metric==='focalLength'?{scope:'report' as const}:{})});
  }
  return result;
 }
 function sameQuantity(claim:Quantity,evidence:Quantity):boolean {
  if(claim.metric!==evidence.metric||claim.unit!==evidence.unit)return false;
- if(Array.isArray(claim.value)||Array.isArray(evidence.value))return Array.isArray(claim.value)&&Array.isArray(evidence.value)&&claim.value.length===evidence.value.length&&claim.value.every((value,index)=>Math.abs(value-(evidence.value as number[])[index])<=Math.max(1e-7,Math.abs(value)*.0001));
+ if(Array.isArray(claim.value)||Array.isArray(evidence.value))return Array.isArray(claim.value)&&Array.isArray(evidence.value)&&claim.value.length<=evidence.value.length&&claim.value.every((value,index)=>Math.abs(value-(evidence.value as number[])[index])<=Math.max(1e-7,Math.abs(value)*.0001));
  if(Math.abs(claim.value-evidence.value)<=Math.max(1e-7,Math.abs(evidence.value)*.00001))return true;
  if(claim.metric==='count'||claim.metric==='resolution'||claim.value===0||claim.unit==='%'&&claim.value===100)return false;
  const precision=claim.raw.split('.')[1]?.length??0;
@@ -136,6 +156,7 @@ const allowedReference=(ref:SourceRef,isRequirement:boolean)=>ref.type!=='knowle
 function isRequirement(text:string):boolean {
  if(!requirementWording.test(text))return false;
  if(/设计目标/.test(text)&&!/(?:客户|用户)[^，；。]{0,12}(?:要求|需求|目标|期望)|项目[^，；。]{0,12}(?:要求|需求)|需求指标/.test(text))return false;
+ if(/为目标/.test(text)&&!/(?:客户|用户|项目)[^，；。]{0,12}(?:要求|需求|目标|期望)|需求指标/.test(text))return false;
  if(!negative.test(text)&&/(?:满足[^。；]{0,30}(?:要求|目标|指标)|达到[^。；]{0,30}(?:要求|目标|指标)|(?:要求|目标|指标)[^。；]{0,12}(?:已满足|已达到))/.test(text))return false;
  return true;
 }
@@ -151,7 +172,9 @@ function contextEvidence(context:ProjectContext):Evidence[] {
  const add=(key:string,label:string,value:unknown,unit:string|undefined,source:SourceReference,priority:number,requirement=false)=>{
   const metric=metricFromLabel(key+' '+label),reference=asSource(source);
   if(metric==='boundary'&&Array.isArray(value)&&value.length===3&&value.every(v=>typeof v==='number')){
-   result.push({metric,value,unit:'m',raw:String(value[0]),quote:`${value.join(' × ')} m`,factor:1,source:reference,priority,requirement});return;
+   result.push({metric,value,unit:'m',raw:String(value[0]),quote:`${value.join(' × ')} m`,factor:1,source:reference,priority,requirement});
+   for(const [index,dimension] of (['length','width','height'] as const).entries())result.push({metric:'range',value:value[index],unit:'m',raw:String(value[index]),quote:`${dimension} ${value[index]}m`,factor:1,dimension,source:reference,priority,requirement});
+   return;
   }
   if(/models/.test(key)&&Array.isArray(value)){
    for(const model of value)if(model&&typeof model==='object'&&typeof model.name==='string'&&typeof model.count==='number')result.push({metric:'count',value:model.count,unit:'count',raw:String(model.count),quote:`${model.count}台 ${model.name}`,factor:1,model:model.name.toUpperCase(),source:reference,priority,requirement});
@@ -159,7 +182,7 @@ function contextEvidence(context:ProjectContext):Evidence[] {
   }
   // Older SceneLab snapshots gave these percentage fields an "mm" unit from their key suffix.
   const actualUnit=source.type==='engineering_data'&&/^(?:performance\.)?under(?:03|05)Mm$/.test(key)?'%':unit??defaultUnit(metric);
-  const scalar=typeof value==='number'?`${value}${actualUnit}`:String(value??'');
+  const scalar=typeof value==='number'||typeof value==='string'&&/^\s*\d+(?:\.\d+)?(?:\s*[～~至—–-]\s*\d+(?:\.\d+)?)?\s*$/.test(value)?`${value}${actualUnit}`:String(value??'');
   result.push(...textEvidence(`${label} ${scalar}`,reference,priority,requirement,metric));
  };
  for(const fact of context.lockedFacts)add(fact.key,fact.label,fact.value,fact.unit,fact.sourceRef,fact.sourceType==='user'?0:fact.sourceType==='engineering_data'?1:2,fact.sourceType==='customer_requirement');
@@ -215,7 +238,7 @@ function withoutStandardQuotations(sentence:string,block:DocumentBlock,refs:Sour
  });
 }
 function selectedEvidence(claim:Quantity,evidence:Evidence[],requirement:boolean,products:string[]):Evidence[] {
- let candidates=evidence.filter(item=>item.requirement===requirement&&item.metric===claim.metric&&item.unit===claim.unit&&(!claim.scope||item.scope===claim.scope)&&(!claim.axis||!item.axis||item.axis===claim.axis));
+ let candidates=evidence.filter(item=>item.requirement===requirement&&item.metric===claim.metric&&item.unit===claim.unit&&(!claim.scope||item.scope===claim.scope)&&(!claim.axis||!item.axis||item.axis===claim.axis)&&(!claim.dimension||!item.dimension||item.dimension===claim.dimension));
  if(!requirement){
   const selected=products.map(model=>model.toUpperCase()),model=claim.model??(selected.length===1?selected[0]:undefined);
   // Library product evidence must identify the same selected model. A generic
@@ -270,7 +293,7 @@ export function validateSections(sections:DocumentSection[],context:ProjectConte
     const pending=uncertain.test(sentence),requirement=isRequirement(sentence)||(block.type==='table'&&/客户要求|需求|确认状态/.test(block.title)&&!capabilityWording.test(sentence));
     const claims=section.claims.filter(claim=>claim.text.includes(quote)||quote.includes(claim.text));
     const ids=new Set(claims.flatMap(claim=>[...claim.factIds,...claim.sourceIds]));
-    const claimRefs=ids.size?refs.filter(ref=>ids.has(ref.id)||context.lockedFacts.some(fact=>ids.has(fact.id)&&fact.sourceRef.id===ref.id)):refs;
+    const claimRefs=ids.size?refs.filter(ref=>ref.manualEvidence===true||ids.has(ref.id)||context.lockedFacts.some(fact=>ids.has(fact.id)&&fact.sourceRef.id===ref.id)):refs;
     const validRefs=claimRefs.filter(ref=>allowedReference(ref,requirement));
     const openConflicts=context.conflicts.filter(conflict=>conflict.status==='open');
     if(!pending&&!negative.test(sentence)&&/(?:满足[^。；]{0,30}(?:要求|目标|指标)|达到[^。；]{0,30}(?:目标|要求)|符合[^。；]{0,20}(?:要求|指标))/.test(sentence)&&openConflicts.length){
@@ -293,7 +316,7 @@ export function validateSections(sections:DocumentSection[],context:ProjectConte
      else add(section,'unsupported_claim',`${label}缺少同一指标、同一单位口径的有效依据，不能使用其他参数的数值代替。`,claim.quote,validRefs,block.id);
     }
     const selectedModels=context.products.map(normalize);
-    for(const model of [...new Set(sentence.match(modelPattern)??[])]){
+    for(const model of [...new Set(modelMatches(sentence).map(match=>match[0]))]){
      if(selectedModels.includes(normalize(model)))continue;
      const source=validRefs.some(ref=>normalize(ref.evidence).includes(normalize(model))&&!negative.test(ref.evidence));
      if(selectedModels.length&&(/配置|采用|部署|选用|配备|\d+\s*台/.test(sentence)||!requirement&&values.some(value=>value.model&&normalize(value.model)===normalize(model))))add(section,'fact_mismatch','所述设备型号与本项目已确认选型不一致。',model,context.lockedFacts.filter(fact=>/products|models/.test(fact.key)).map(fact=>asSource(fact.sourceRef)),block.id);

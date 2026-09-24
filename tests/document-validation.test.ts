@@ -154,7 +154,9 @@ describe('typed and source-grounded document fact validation',()=>{
   const refs=[source('K18追踪距离30m。')];
   expect(errors('报告配置已验证追踪距离47m。',c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'fact_mismatch',quote:'47m'})]));
   expect(errors('相机实际追踪能力47m。',c,[])).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'47m'})]));
-  for(const value of [30,47])expect(errors(`场地长度${value}m。`,c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:`${value}m`})]));
+  // The site length is locked at 20 m, so a different length is now a direct
+  // fact mismatch rather than only a claim lacking supporting evidence.
+  for(const value of [30,47])expect(errors(`场地长度${value}m。`,c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'fact_mismatch',quote:`${value}m`})]));
   expect(errors('系统定位精度8mm。',c,refs)).toEqual(expect.arrayContaining([expect.objectContaining({type:'unsupported_claim',quote:'8mm'})]));
   const unselected=structuredClone(c);unselected.lockedFacts=[];
   expect(check('采用8mm镜头。',unselected,refs)).toEqual(expect.arrayContaining([expect.objectContaining({severity:'warning',message:expect.stringContaining('口径')})]));

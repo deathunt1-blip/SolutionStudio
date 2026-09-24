@@ -168,12 +168,15 @@ describe('document engine workflow, private context and durable jobs',()=>{
   const local=await projects.queryChunks(p.id,'PTP'),docSource=await engine.retriever.retrieve(p.id,'',[local[0].documentId]),inputSource=await engine.retriever.retrieve(p.id,'',[input.input.id]);expect(docSource.some(s=>s.source.inputId===input.input.id)).toBe(true);expect(inputSource.some(s=>s.source.inputId===input.input.id)).toBe(true);
  });
  test('adding an AI technical diagram retains original edited prose and its overwrite protection',async()=>{
-  const p=await project('配图保留人工正文'),doc=await engine.create(p.id),section=doc.sections[0];
-  const edited=await engine.edit(doc.id,section.id,{revision:section.revision,blocks:[{type:'paragraph',text:'人工核验并编辑的技术设计说明。'}]}),before=edited.sections[0].blocks;
+  const p=await project('配图保留人工正文',undefined,true),doc=await engine.create(p.id),section=doc.sections[0];
+  let edited=await engine.edit(doc.id,section.id,{revision:section.revision,blocks:[{type:'paragraph',text:'人工核验并编辑的技术设计说明。'}]});const before=edited.sections[0].blocks;
+  const sc=await buildSectionContext(edited.sections[0],await projects.getContext(p.id),engine.retriever,engine.structured,12000);
+  edited=await engine.addSectionSources(doc.id,section.id,{revision:edited.sections[0].revision,documentRevision:edited.revision,sourceIds:[sc.sources[0].id]});
   // This path starts a real Chromium renderer; allow bounded startup time on
   // shared CI runners while still requiring the actual durable job terminal state.
   const job=await run(edited,[section.id],{mode:'diagram',overwriteEdited:true},25000);expect(job.status).toBe('completed');
   const after=await engine.get(doc.id),updated=after.sections.find(item=>item.id===section.id)!;expect(updated.blocks.filter(block=>block.type!=='diagram')).toEqual(before);expect(updated.blocks.filter(block=>block.type==='diagram')).toHaveLength(1);expect(updated.edited).toBe(true);
+  expect(updated.sourceRefs.find(source=>source.id===sc.sources[0].id)).toMatchObject({manualEvidence:true});
   await expect(engine.generate(doc.id,{expectedRevision:after.revision,sectionIds:[section.id],mode:'regenerate'})).rejects.toMatchObject({statusCode:409});
  },30000);
  test('restart preserves job billing reservation and does not automatically repeat in-flight requests',async()=>{

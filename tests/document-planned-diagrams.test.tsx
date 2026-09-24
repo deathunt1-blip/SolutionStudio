@@ -35,4 +35,26 @@ describe('planned technical drawings are discoverable and deliberately generated
  it.each(['running','stale'] as const)('prevents planned drawing requests while the document is %s',async condition=>{
   const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);await mount({...proposal,contextStale:condition==='stale'},condition==='running');expect(action().disabled).toBe(true);await act(async()=>action().click());expect(fetcher).not.toHaveBeenCalled();
  });
+ it('adds selected evidence with both revisions, preserves edited prose and does not request a model',async()=>{
+  const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({document:proposal}),{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetcher);
+  await mount({...proposal,sections:[{...proposal.sections[0],edited:true,status:'edited',sourceRefs:[{id:'authority-chunk',type:'knowledge_chunk',label:'MC4000 规格书',evidence:'MC4000 FOV 53°×53°',authority:'authoritative',use:'fact_evidence'}]}]});
+  await act(async()=>[...host.querySelectorAll('[role=tab]')].find(button=>button.textContent==='来源')!.dispatchEvent(new MouseEvent('click',{bubbles:true})));
+  const add=()=>[...host.querySelectorAll('button')].find(button=>button.textContent?.startsWith('补充章节依据（'))!;
+  expect(add().disabled).toBe(true);await act(async()=>(host.querySelector('.inspector-source input[type=checkbox]') as HTMLInputElement).click());expect(add().disabled).toBe(false);
+  await act(async()=>add().click());expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0][0]).toBe('/api/generated-documents/document/sections/需要技术图/sources');expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({revision:1,documentRevision:7,sourceIds:['authority-chunk']});
+  expect(host.querySelector('[role=dialog]')).toBeNull();expect(add().disabled).toBe(true);expect(host.textContent).toContain('已有正文。');
+ });
+ it('keeps the evidence selection available after a rejected source and displays the server reason',async()=>{
+  const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({message:'所选资料已归档，请重新选择'}),{status:409,headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetcher);
+  await mount({...proposal,sections:[{...proposal.sections[0],sourceRefs:[{id:'old-chunk',type:'knowledge_chunk',label:'原规格书',evidence:'原引用'}]}]});
+  await act(async()=>[...host.querySelectorAll('[role=tab]')].find(button=>button.textContent==='来源')!.dispatchEvent(new MouseEvent('click',{bubbles:true})));
+  await act(async()=>(host.querySelector('.inspector-source input[type=checkbox]') as HTMLInputElement).click());
+  const button=[...host.querySelectorAll('button')].find(button=>button.textContent?.startsWith('补充章节依据（'))!;await act(async()=>button.click());
+  expect(host.textContent).toContain('所选资料已归档，请重新选择');expect((host.querySelector('.inspector-source input[type=checkbox]') as HTMLInputElement).checked).toBe(true);expect(button.disabled).toBe(false);
+ });
+ it.each(['running','stale'] as const)('blocks manual evidence while the document is %s',async condition=>{
+  const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);await mount({...proposal,contextStale:condition==='stale',sections:[{...proposal.sections[0],sourceRefs:[{id:'source',type:'knowledge_chunk',label:'规格书',evidence:'原引用'}]}]},condition==='running');
+  await act(async()=>[...host.querySelectorAll('[role=tab]')].find(button=>button.textContent==='来源')!.dispatchEvent(new MouseEvent('click',{bubbles:true})));
+  await act(async()=>(host.querySelector('.inspector-source input[type=checkbox]') as HTMLInputElement).click());const button=[...host.querySelectorAll('button')].find(button=>button.textContent?.startsWith('补充章节依据（'))!;expect(button.disabled).toBe(true);await act(async()=>button.click());expect(fetcher).not.toHaveBeenCalled();
+ });
 });

@@ -146,6 +146,34 @@ export class DocumentEngine {
   await this.db.transaction(async tx=>{await this.idle(tx,id);await this.checkAssets(tx,doc.projectId,blocks.filter(b=>b.type==='asset').map(b=>b.assetId),retained);const r=(await tx.query('SELECT revision FROM document_sections WHERE id=$1 FOR UPDATE',[sectionId]))[0];if(r.revision!==old.revision)throw new HttpError(409,'章节已更新，请刷新');await this.persistSection(tx,section);await tx.query("UPDATE generated_documents SET revision=revision+1,status='draft',updated_at=now() WHERE id=$1",[id]);await tx.query('DELETE FROM document_validation_issues WHERE document_id=$1',[id]);await this.audit(tx,id,'section_edited',{sectionId,blocks:old.blocks},{sectionId,blocks});});
   await this.validate(id);return this.get(id);
  }
+ async addSectionSources(id:string,sectionId:string,input:any){
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!['revision','documentRevision','sourceIds'].includes(key))||!Array.isArray(input.sourceIds)||!input.sourceIds.length||input.sourceIds.length>30||input.sourceIds.some((sourceId:unknown)=>!safeId(sourceId))||new Set(input.sourceIds).size!==input.sourceIds.length)throw new HttpError(400,'请仅提交章节版本、方案版本和有效来源 ID');
+  const doc=await this.get(id),section=doc.sections.find(s=>s.id===sectionId);if(!section)throw new HttpError(404,'章节不存在');
+  if(doc.contextStale||input.revision!==section.revision||input.documentRevision!==doc.revision)throw new HttpError(409,'章节、方案或项目事实已更新，请刷新后再补充依据');
+  const context=await this.snapshot(id),sc=await buildSectionContext(section,context,this.retriever,this.structured,modelInputTokens,{sourceIds:input.sourceIds,limitsEnabled:false,includeSelectedEvidence:true});
+  const matches=(source:SourceRef,sourceId:string)=>[source.id,source.documentId,source.inputId].includes(sourceId);
+  if(input.sourceIds.some((sourceId:string)=>!sc.sources.some(source=>matches(source,sourceId))))throw new HttpError(422,'部分所选来源已失效、不属于当前项目或不匹配已选产品，未补充任何依据');
+  const additions=sc.sources.filter(source=>input.sourceIds.some((sourceId:string)=>matches(source,sourceId))).map(source=>({...source,manualEvidence:true as const}));
+  const sourceRefs=[...new Map([...section.sourceRefs,...additions].map(source=>[source.type+':'+source.id,source])).values()];
+  await this.db.transaction(async tx=>{
+   // Use the same project/document lock order as generation, then recheck after retrieval.
+   await this.checkAssets(tx,doc.projectId,[],[]);await tx.query('SELECT id FROM generated_documents WHERE id=$1 FOR UPDATE',[id]);await this.idle(tx,id);
+   const row=await this.row(id,tx),current=(await tx.query('SELECT revision FROM document_sections WHERE id=$1 AND document_id=$2 FOR UPDATE',[sectionId,id]))[0];
+   if(row.revision!==doc.revision||current?.revision!==section.revision||row.current_context_revision!==doc.contextRevision||row.current_input_revision!==row.context_snapshot.inputRevision||row.project_status==='archived')throw new HttpError(409,'章节、方案或项目事实已更新，未补充依据');
+   for(const source of additions){
+    if(source.type!=='knowledge_chunk'&&source.type!=='knowledge_section')continue;
+    const currentSource=(await tx.query("SELECT coalesce(nullif(d.canonical_title,''),d.title) AS title,d.status,d.active_version_id,d.canonical_document_id,d.scope,d.project_id,(SELECT value#>>'{}' FROM classification_results WHERE version_id=d.active_version_id AND field='authority') AS authority,(SELECT value#>>'{}' FROM classification_results WHERE version_id=d.active_version_id AND field='documentType') AS document_type FROM documents d WHERE d.id=$1 AND d.organization_id='default' AND d.workspace_id='default' FOR UPDATE",[source.documentId]))[0];
+    const table=source.type==='knowledge_chunk'?'knowledge_chunks':'knowledge_sections';
+    const evidence=(await tx.query(`SELECT text FROM ${table} WHERE id=$1 AND document_id=$2 AND version_id=$3`,[source.id,source.documentId,source.versionId]))[0];
+    if(!currentSource||currentSource.status!=='active'||currentSource.canonical_document_id||currentSource.active_version_id!==source.versionId||currentSource.scope!=='global'||!evidence||evidence.text!==source.evidence||(source.type==='knowledge_chunk'&&(currentSource.title!==source.label||(currentSource.authority??'unknown')!==source.authority||source.use==='fact_evidence'&&currentSource.document_type==='standard')))throw new HttpError(409,'所选资料已更新、合并或归档，请重新选择当前有效来源');
+   }
+   await tx.query('UPDATE document_sections SET source_refs=$2::jsonb,revision=revision+1 WHERE id=$1',[sectionId,json(sourceRefs)]);
+   for(const source of additions)await tx.query('INSERT INTO section_source_refs(section_id,source_type,source_id,evidence) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT(section_id,source_type,source_id) DO UPDATE SET evidence=excluded.evidence',[sectionId,source.type,source.id,json(source)]);
+   await tx.query("UPDATE generated_documents SET revision=revision+1,status='draft',updated_at=now() WHERE id=$1",[id]);
+   await this.audit(tx,id,'section_sources_added',{sectionId,sourceRefs:section.sourceRefs},{sectionId,sourceRefs:additions});
+  });
+  await this.validate(id);return this.get(id);
+ }
  async jobs(id:string){await this.row(id);return (await this.db.query('SELECT * FROM generation_jobs WHERE document_id=$1 ORDER BY created_at DESC LIMIT 50',[id])).map(rowJob);}
  private async config(input:any={}):Promise<{settings:LLMConfig;config:GenerationConfig}>{
   if(!input||typeof input!=='object'||Array.isArray(input))throw new HttpError(400,'生成设置需为 JSON 对象');
@@ -169,7 +197,7 @@ export class DocumentEngine {
   const target=doc.sections.filter(s=>sectionIds.includes(s.id));if(target.some(s=>s.edited)&&input.overwriteEdited!==true)throw new HttpError(409,'所选章节已人工编辑；需再次确认覆盖');
   const sourceIds=input.sourceIds??[];if(!Array.isArray(sourceIds)||sourceIds.length>30||sourceIds.some(id=>!safeId(id)))throw new HttpError(400,'指定来源无效');
   const jobId=randomUUID();
-  await this.db.transaction(async tx=>{await this.idle(tx,id);const row=await this.row(id,tx);if(row.revision!==doc.revision||(row.current_context_revision!==doc.contextRevision||row.current_input_revision!==row.context_snapshot.inputRevision||row.project_status==='archived'))throw new HttpError(409,'方案或项目事实已更新');
+  await this.db.transaction(async tx=>{await this.checkAssets(tx,doc.projectId,[],[]);await tx.query('SELECT id FROM generated_documents WHERE id=$1 FOR UPDATE',[id]);await this.idle(tx,id);const row=await this.row(id,tx);if(row.revision!==doc.revision||(row.current_context_revision!==doc.contextRevision||row.current_input_revision!==row.context_snapshot.inputRevision||row.project_status==='archived'))throw new HttpError(409,'方案或项目事实已更新');
    await tx.query('INSERT INTO generation_jobs(id,document_id,section_ids,targets,config,mode,source_ids) VALUES($1,$2,$3::jsonb,$4::jsonb,$5::jsonb,$6,$7::jsonb)',[jobId,id,json(sectionIds),json(target.map(s=>({id:s.id,revision:s.revision}))),json(config),mode,json(sourceIds)]);
    await tx.query("UPDATE document_sections SET status='queued',error=null WHERE id=ANY($1::text[])",[sectionIds]);await tx.query("UPDATE generated_documents SET status='generating',updated_at=now() WHERE id=$1",[id]);await tx.query("UPDATE projects SET status='generating' WHERE id=$1",[doc.projectId]);await this.audit(tx,id,'generation_queued',null,{jobId,sectionIds,config,mode,overwriteEdited:input.overwriteEdited===true});
   });this.wake();return (await this.jobs(id)).find(j=>j.id===jobId)!;
@@ -214,7 +242,7 @@ export class DocumentEngine {
      if(job.mode==='diagram'){
       const response=await request('根据当前章节与项目事实绘制技术关系图。仅输出 Mermaid source，不要 Markdown 围栏、JSON、解释或配置。用 flowchart LR/TD 或 sequenceDiagram。采用简洁中文节点；未知型号只用功能角色，不添加未经确认的设备数量、参数和网络协议。禁止链接、脚本和外部图片。图中不得写来源名称。',sc.prompt,false);
       const source=cleanMermaidSource(response.content);await renderMermaid(source,'svg');
-      result={blocks:[...section.blocks.filter(b=>b.type!=='diagram'),{id:randomUUID(),type:'diagram',diagramType:'mermaid',source,caption:section.title+'示意图',generatedBy:'ai',sourceRefs:sc.sources}],sourceRefs:[...section.sourceRefs,...sc.sources],assetRefs:section.assetRefs,lockedFactRefs:section.lockedFactRefs,claims:section.claims};
+      result={blocks:[...section.blocks.filter(b=>b.type!=='diagram'),{id:randomUUID(),type:'diagram',diagramType:'mermaid',source,caption:section.title+'示意图',generatedBy:'ai',sourceRefs:sc.sources}],sourceRefs:[...sc.sources,...section.sourceRefs],assetRefs:section.assetRefs,lockedFactRefs:section.lockedFactRefs,claims:section.claims};
      }else{
       const response=await request(generationSystem,sc.prompt);result=parseGeneration(response.content,sc);
       const problemsFor=(draft:typeof result)=>[...customerFacingProblems(draft.blocks,sc.sources),...highRiskClaimProblems(draft.blocks),...claimEvidenceProblems(draft.claims,sc.context,sc.sources,sc.facts)];

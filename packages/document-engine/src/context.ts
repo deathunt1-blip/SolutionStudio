@@ -25,6 +25,7 @@ export const factSource=(fact:StructuredFact):SourceRef=>({type:'structured_fact
 export const generationSystem=`你是上海青瞳视觉的售前技术方案撰稿人。只输出可直接交给客户的中文技术正文；不限制固定段数，不为了减少token压缩成摘要。篇幅由本章目的、技术逻辑与已确认项目事实决定，避免重复。
 按照sectionBrief组织本章，解释系统如何工作、模块如何衔接、设计与实施如何进行。各章节无需覆盖整个方案，不复述每张表的全部数字。不要重复章节标题，表格、编号和工程图由程序插入。
 事实层次：projectFacts及customerRequirements只描述当前项目；structuredFacts是已选型号的权威产品参数；authoritativeEvidence仅在型号和适用范围匹配时支持技术能力；historicalSections、blueprints与styleExample只教写法和通用技术逻辑，不能移植为当前项目能力。历史章节的数量、地点、客户名称、设备选型、指标与采购经历绝不能移植。正文不得带入其他客户、内部来源名称、知识库或检索痕迹。标准规范可引用正式编号，但标准的“应支持”不能改写为本项目“已支持”。
+方案适用性：SectionBrief的recommendedStructure由当前章节目的决定，referenceDesignChoices和blueprints内的组织示例不是本项目设计指令。可以吸收参考中与本章相关的论证顺序、比较维度、因果解释及机制逻辑，再以当前事实重组，不必机械套用推荐提纲。写作前对每一个分方案、模块组合、分区、标定组织、算法和软件功能检查当前projectFacts/customerRequirements或匹配已选产品的authoritativeEvidence；只有历史参考支持的设计不得写成“本项目采用/支持/配置”。默认围绕currentConfiguration写一个一致方案；不能从参考的开放/封闭方案、网格单元或光惯融合方法推导本项目也需要这些结构与能力。同步需求不自动证明已配置独立同步器，同型号相机也不自动证明已选软件具备历史系统的算法。通用原理可解释，但须保留适用条件，不将“可迁移”作为已具备能力的依据。
 projectFingerprint限定当前应用、对象与模块，历史章节的referenceScope仅说明参考原文适用范围。写作前逐项剔除仅存在于历史参考、并未出现在当前项目事实或要求中的对象、硬件、应用和交付项；不要为了内容丰富扩充项目范围。例如手部采集不因参考机器人章节就新增四足对象，动作采集不因参考人体分析章节就新增肌电设备。已知功能讲清处理机制，未知硬件能力不写成现成功能。蓝图的projectSpecificElements是禁止照搬清单。质保期限、免费维修更换、收费方式、上门响应、巡检、备件和驻场等商务服务承诺必须来自当前项目明确约定；不能沿用其他项目的售后章节。验收与交付章围绕本项目测试方法、记录和交付成果展开，不自行追加这些承诺。
 不能因为部分参数未知就停止解释功能流程。未知数值直接不写；未选型号的辅助设备可以用功能角色描述，但不要断言已配置或已支持某接口。不得以条件句包装的数字假设填补事实。不得自行计算工程数值、空间尺寸、角度、距离、覆盖与误差；不得擅自宣布当前项目排除某种应用。客户要求不自动成为产品能力，工程基线不自动成为客户确认的有效范围和验收门槛。
 用专业、直接的方案语言描述已知设计；绝不把内部问题清单变成正文，不写“待确认”“尚未明确”“资料未提供”“需补充”“不构成承诺”等工作记录。不要讨论为何不能下结论，不暴露内部字段。已知冲突通过doNotClaim限制承诺，不在正文讲述内部核对过程。不编造事实以消除缺口。
@@ -69,15 +70,20 @@ export class DocumentRetriever {
  }
 }
 export interface SectionContext {prompt:string;tokens:number;sources:SourceRef[];facts:StructuredFact[];factIds:string[];assetIds:string[];context:ProjectContext}
-export async function buildSectionContext(section:DocumentSection,context:ProjectContext,retriever:DocumentRetriever,structured:StructuredService,maxContextTokens:number,extra:{mode?:string;sourceIds?:string[];previous?:string;limitsEnabled?:boolean}={}):Promise<SectionContext>{
+export async function buildSectionContext(section:DocumentSection,context:ProjectContext,retriever:DocumentRetriever,structured:StructuredService,maxContextTokens:number,extra:{mode?:string;sourceIds?:string[];previous?:string;limitsEnabled?:boolean;includeSelectedEvidence?:boolean}={}):Promise<SectionContext>{
  const engineering=effectiveEngineering(context),role=inferSectionRole(section.title);
- const facts=focusProductFacts(role,(context as ProjectContext&{structuredFacts?:StructuredFact[]}).structuredFacts??await structured.productFacts(context.products));
- const required=focusRequirements(role,context,allRequirements(context)),safeFacts=focusFacts(role,context.lockedFacts);
+ const allProductFacts=(context as ProjectContext&{structuredFacts?:StructuredFact[]}).structuredFacts??await structured.productFacts(context.products);
+ const facts=extra.includeSelectedEvidence?allProductFacts:focusProductFacts(role,allProductFacts);
+ const required=extra.includeSelectedEvidence?allRequirements(context):focusRequirements(role,context,allRequirements(context));
+ const configurationFacts=['architecture','technical_route','system_composition'].includes(role)?context.lockedFacts.filter(f=>/^deployment\.(models|equipmentCount)$/.test(f.key)):[];
+ const safeFacts=extra.includeSelectedEvidence?context.lockedFacts:[...new Map([...focusFacts(role,context.lockedFacts),...configurationFacts].map(f=>[f.id,f])).values()];
  const sources:SourceRef[]=[...safeFacts.map(f=>({...asSource(f.sourceRef),labelKind:'fact' as const})),...facts.map(factSource),...required.map(r=>({type:r.sourceInputId==='user'?'user' as const:'project_input' as const,id:r.sourceChunkId??r.sourceInputId,inputId:r.sourceInputId==='user'?undefined:r.sourceInputId,label:requirementLabel(r.key),labelKind:'requirement' as const,evidence:r.evidence}))];
  const query=[section.retrievalPolicy?.query??section.title,...context.products].join(' ');
  const history=retriever.sections?await retriever.sections({role,fingerprint:context.fingerprint,products:context.products,query,sourceIds:extra.sourceIds,limit:extra.limitsEnabled?3:8}):[];
  const brief=makeSectionBrief(section,context,role,history.map(h=>h.section));
  brief.factsToUse=safeFacts.map(f=>f.id);
+ brief.currentConfiguration=brief.currentConfiguration.filter(f=>safeFacts.some(visible=>visible.id===f.id));
+ const referenceDesignChoices=brief.referenceDesignChoices;brief.referenceDesignChoices=[];
  brief.requirementsToAddress=required.map(r=>r.id);
  const bundle:SectionReferenceBundle={role,projectFacts:safeFacts.map(f=>({id:f.id,label:f.label,value:f.value,unit:f.unit,sourceType:f.sourceType,sourceId:f.sourceRef.id})),customerRequirements:required.map(r=>({id:r.id,label:requirementLabel(r.key),value:r.value,sourceId:r.sourceChunkId??r.sourceInputId})),structuredFacts:facts.map(f=>({id:f.id,productKey:f.productKey,field:f.field,value:f.value,unit:f.unit})),authoritativeEvidence:[],historicalSections:[],blueprints:[]};
  const base={sectionTitle:section.title,mode:extra.mode??'regenerate',projectSummary:context.summary,projectFingerprint:context.fingerprint,selectedProducts:context.products,sectionBrief:brief,...bundle,
@@ -91,7 +97,8 @@ export async function buildSectionContext(section:DocumentSection,context:Projec
  for(const hit of history){const h=hit.section;
   const entry={id:h.id,title:h.title,use:'writing_reference',referenceScope:{applications:h.applications,targetObjects:h.targetObjects,products:h.products,projectSpecificElements:h.blueprint?.projectSpecificElements??[]},text:h.text,summary:h.summary};base.historicalSections.push(entry);
   if(size()>maxContextTokens){base.historicalSections.pop();continue;}
-  if(h.blueprint){base.blueprints.push(h.blueprint);if(size()>maxContextTokens)base.blueprints.pop();}
+  if(h.blueprint){base.blueprints.push({sourceId:h.id,use:'writing_reference',allowedUse:'conditional_reasoning_and_organization',referenceScope:entry.referenceScope,referenceBlueprint:h.blueprint,currentProjectDecisions:false});if(size()>maxContextTokens)base.blueprints.pop();}
+  const designChoices=referenceDesignChoices.find(choice=>choice.sourceId===h.id);if(designChoices){brief.referenceDesignChoices.push(designChoices);if(size()>maxContextTokens)brief.referenceDesignChoices.pop();}
   sources.push({type:'knowledge_section',id:h.id,label:`${hit.documentTitle} · ${h.title}`,evidence:h.text,documentId:h.documentId,versionId:h.versionId,authority:h.authority,use:'writing_reference'});
  }
  const retrieved=rankSources(await retriever.retrieve(context.projectId,query,extra.sourceIds),section.title,context.products);
@@ -105,7 +112,7 @@ export async function buildSectionContext(section:DocumentSection,context:Projec
   const matchingProduct=context.products.some(model=>mentionsModel(item.source.label+'\n'+item.text+'\n'+(item.products??[]).join(' '),model));
   const authoritative=item.source.authority==='authoritative'&&!standard&&matchingProduct;
   if(item.source.authority==='authoritative'&&!authoritative)continue;
-  if(authoritative&&!includeDetailedProductEvidence(role))continue;
+  if(authoritative&&!includeDetailedProductEvidence(role)&&!extra.includeSelectedEvidence)continue;
   // Raw project excerpts cannot resurrect discarded requirements; the workspace's accepted evidence is canonical.
   if(current)continue;
   const entry={id:item.source.id,use:authoritative?'product_evidence':'writing_reference',authority:item.source.authority,text:item.text};

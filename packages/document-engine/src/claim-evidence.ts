@@ -28,9 +28,9 @@ export function claimEvidenceProblems(claims:Claim[],context:ProjectContext,sour
   const explicitProjectPrinciple=claim.kind==='principle'&&projectCommitment.test(claim.text);
   if(!['capability','engineering'].includes(claim.kind??'')&&!explicitProjectPrinciple)continue;
   const factIds=new Set(claim.factIds.filter(id=>!requirementIds.has(id))),sourceIds=new Set(claim.sourceIds);
-  const cited=sources.filter(source=>sourceIds.has(source.id));
+  const cited=sources.filter(source=>sourceIds.has(source.id)||source.manualEvidence===true);
   const currentFact=locked.some(fact=>factIds.has(fact.id)||cited.some(source=>source.id===fact.sourceRef.id&&source.labelKind==='fact'));
-  const structuredFact=structured.some(fact=>factIds.has(fact.id)||sourceIds.has(fact.id));
+  const structuredFact=structured.some(fact=>factIds.has(fact.id)||cited.some(source=>source.type==='structured_fact'&&source.id===fact.id));
   const productEvidence=cited.some(source=>source.type==='knowledge_chunk'&&source.use==='fact_evidence'&&source.authority==='authoritative'&&source.labelKind!=='requirement'&&!standard.test(source.label)&&context.products.some(model=>modelIn(source.label+'\n'+source.evidence,model)));
   if(currentFact||structuredFact||productEvidence)continue;
   problems.push({quote:claim.text,sourceRefs:cited,message:explicitProjectPrinciple

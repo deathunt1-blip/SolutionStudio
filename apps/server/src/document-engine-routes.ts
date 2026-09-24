@@ -22,6 +22,7 @@ export async function registerDocumentEngineRoutes(app:FastifyInstance,engine:Do
  app.patch('/api/generated-documents/:id',async r=>({document:await engine.patch(params(r).id,body(r))}));
  app.patch('/api/generated-documents/:id/plan',async r=>({document:await engine.plan(params(r).id,body(r))}));
  app.patch('/api/generated-documents/:id/sections/:sectionId',async r=>({document:await engine.edit(params(r).id,params(r).sectionId,body(r))}));
+ app.post('/api/generated-documents/:id/sections/:sectionId/sources',async r=>({document:await engine.addSectionSources(params(r).id,params(r).sectionId,body(r))}));
  app.post('/api/generated-documents/:id/generate',async(r,reply)=>reply.code(202).send({job:await engine.generate(params(r).id,body(r))}));
  app.get('/api/generated-documents/:id/jobs',async r=>({jobs:await engine.jobs(params(r).id)}));
  app.post('/api/generated-documents/:id/validate',async r=>({issues:await engine.validate(params(r).id)}));
